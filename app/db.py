@@ -39,7 +39,8 @@ CREATE TABLE IF NOT EXISTS settings (
 CREATE TABLE IF NOT EXISTS prayer_settings (
     prayer_name TEXT PRIMARY KEY,   -- fajr, dhuhr, asr, maghrib, isha
     enabled INTEGER NOT NULL DEFAULT 1,
-    duration_minutes INTEGER        -- NULL = use global default
+    duration_minutes INTEGER,       -- NULL = use global default
+    start_offset_minutes INTEGER    -- NULL = use global default; minutes to start BEFORE the prayer time
 );
 
 CREATE TABLE IF NOT EXISTS devices (
@@ -86,6 +87,7 @@ DEFAULT_PRAYERS = ["fajr", "dhuhr", "asr", "maghrib", "isha"]
 DEFAULT_SETTINGS = {
     "admin_password_hash": "",  # set on first run
     "duration_default_minutes": "7",
+    "start_offset_default_minutes": "0",  # minutes to start BEFORE the prayer time, 0 = start exactly at prayer time
     # StreamTheWorld is the actual CDN Mediacorp/RTM stations are hosted
     # on; this URL pattern was found via a third-party station directory
     # and NOT verified end-to-end from this build environment (which has
@@ -121,6 +123,14 @@ def _connect() -> Iterator[sqlite3.Connection]:
 def init_db() -> None:
     with _WRITE_LOCK, _connect() as conn:
         conn.executescript(SCHEMA)
+        # Migration for DBs created before start_offset_minutes existed.
+        # CREATE TABLE IF NOT EXISTS above only affects brand-new databases,
+        # so an already-deployed app.db needs this column added explicitly.
+        # Safe to run every startup: fails harmlessly once the column exists.
+        try:
+            conn.execute("ALTER TABLE prayer_settings ADD COLUMN start_offset_minutes INTEGER")
+        except sqlite3.OperationalError:
+            pass  # already migrated
         for name in DEFAULT_PRAYERS:
             conn.execute(
                 "INSERT OR IGNORE INTO prayer_settings (prayer_name, enabled, duration_minutes) "
@@ -173,11 +183,17 @@ def get_prayer_settings() -> list[sqlite3.Row]:
         ).fetchall()
 
 
-def set_prayer_setting(prayer_name: str, enabled: bool, duration_minutes: int | None) -> None:
+def set_prayer_setting(
+    prayer_name: str,
+    enabled: bool,
+    duration_minutes: int | None,
+    start_offset_minutes: int | None = None,
+) -> None:
     with _WRITE_LOCK, _connect() as conn:
         conn.execute(
-            "UPDATE prayer_settings SET enabled = ?, duration_minutes = ? WHERE prayer_name = ?",
-            (1 if enabled else 0, duration_minutes, prayer_name),
+            "UPDATE prayer_settings SET enabled = ?, duration_minutes = ?, start_offset_minutes = ? "
+            "WHERE prayer_name = ?",
+            (1 if enabled else 0, duration_minutes, start_offset_minutes, prayer_name),
         )
 
 

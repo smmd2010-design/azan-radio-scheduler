@@ -12,6 +12,8 @@
     <input type="text" name="station_name" value="{{ settings.station_name }}">
     <label>Default duration (minutes) — how long the radio plays before auto-stopping</label>
     <input type="number" name="duration_default_minutes" min="1" max="120" value="{{ settings.duration_default_minutes }}" required>
+    <label>Start early (minutes before prayer time) — 0 starts exactly at the prayer time</label>
+    <input type="number" name="start_offset_default_minutes" min="0" max="60" value="{{ settings.start_offset_default_minutes or 0 }}" required>
     <label>Timezone</label>
     <input type="text" name="timezone" value="{{ settings.timezone }}">
 
@@ -41,15 +43,17 @@
   <h2>Prayers</h2>
   <form method="post" action="/settings/prayers">
     <table>
-      <tr><th>Prayer</th><th>Enabled</th><th>Duration override (min)</th></tr>
+      <tr><th>Prayer</th><th>Enabled</th><th>Duration override (min)</th><th>Start early override (min)</th></tr>
       {% for row in prayer_settings %}
       <tr>
         <td>{{ prayer_labels[row.prayer_name] }}</td>
         <td><input type="checkbox" name="enabled_{{ row.prayer_name }}" {{ 'checked' if row.enabled }} style="width:auto;"></td>
         <td><input type="number" name="duration_{{ row.prayer_name }}" min="1" max="120" value="{{ row.duration_minutes or '' }}" placeholder="default"></td>
+        <td><input type="number" name="start_offset_{{ row.prayer_name }}" min="0" max="60" value="{{ row.start_offset_minutes or '' }}" placeholder="default"></td>
       </tr>
       {% endfor %}
     </table>
+    <p class="muted">"Start early" makes the radio begin playing that many minutes before the actual prayer time (e.g. 5 = starts 5 minutes early). Leave blank/0 to start exactly at the prayer time.</p>
     <button type="submit">Save prayer settings</button>
   </form>
 </div>

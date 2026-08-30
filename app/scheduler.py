@@ -72,6 +72,7 @@ async def ensure_schedule_for_today(today_str: str, tz: ZoneInfo, *, force_refet
 
     prayer_cfg = {row["prayer_name"]: row for row in db.get_prayer_settings()}
     default_duration = int(db.get_setting("duration_default_minutes", "7"))
+    default_start_offset = int(db.get_setting("start_offset_default_minutes", "0"))
 
     new_rows = []
     for name in PRAYER_NAMES:
@@ -82,7 +83,11 @@ async def ensure_schedule_for_today(today_str: str, tz: ZoneInfo, *, force_refet
         if not hhmm:
             continue
         duration = cfg["duration_minutes"] if cfg["duration_minutes"] else default_duration
-        start_at = _combine(today_str, hhmm, tz)
+        # start_offset_minutes may not exist as a key on older in-memory Row
+        # objects mid-migration; .keys() check keeps this safe either way.
+        offset_override = cfg["start_offset_minutes"] if "start_offset_minutes" in cfg.keys() else None
+        start_offset = offset_override if offset_override else default_start_offset
+        start_at = _combine(today_str, hhmm, tz) - dt.timedelta(minutes=start_offset)
         stop_at = start_at + dt.timedelta(minutes=duration)
         new_rows.append(
             {

@@ -229,6 +229,7 @@ async def settings_get(request: Request):
 async def settings_general(
     request: Request,
     duration_default_minutes: int = Form(...),
+    start_offset_default_minutes: int = Form(0),
     stream_url: str = Form(""),
     stream_content_type: str = Form("audio/mpeg"),
     station_name: str = Form("Warna 94.2FM"),
@@ -241,6 +242,7 @@ async def settings_general(
     db.set_settings(
         {
             "duration_default_minutes": str(duration_default_minutes),
+            "start_offset_default_minutes": str(start_offset_default_minutes),
             "stream_url": stream_url.strip(),
             "stream_content_type": stream_content_type.strip() or "audio/mpeg",
             "station_name": station_name.strip() or "Warna 94.2FM",
@@ -262,7 +264,9 @@ async def settings_prayers(request: Request):
         enabled = form.get(f"enabled_{name}") == "on"
         duration_raw = form.get(f"duration_{name}", "").strip()
         duration = int(duration_raw) if duration_raw else None
-        db.set_prayer_setting(name, enabled, duration)
+        offset_raw = form.get(f"start_offset_{name}", "").strip()
+        start_offset = int(offset_raw) if offset_raw else None
+        db.set_prayer_setting(name, enabled, duration, start_offset)
     db.log("INFO", "settings", "Per-prayer settings updated")
     return RedirectResponse("/settings", status_code=303)
 
