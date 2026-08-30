@@ -393,10 +393,33 @@ async def alexa_login_start(
                 "captcha_image_url": status.get("captcha_image_url"),
             }
         )
+    # Amazon accounts with 2-step verification (2FA) turned on stop here and
+    # show a "we sent you a code" page instead of logging straight in. Before
+    # this check existed, that state fell through to the `login.session`
+    # fallback below and got misreported as a successful login - the account
+    # never actually finished authenticating, so later calls like the device
+    # list came back empty with no error to explain why.
+    if status.get("securitycode_required"):
+        _alexa_login_state["login"] = login
+        return JSONResponse({"ok": True, "needs_2fa": True})
+    if status.get("claimspicker_required") or status.get("authselect_required"):
+        return JSONResponse(
+            {
+                "ok": False,
+                "error": (
+                    "This account needs an extra verification step (e.g. choosing "
+                    "where to receive a code) that isn't supported here yet. If "
+                    "possible, simplify 2-step verification for this account to a "
+                    "single authenticator app or SMS code and try again."
+                ),
+            }
+        )
     if status.get("login_successful") or login.session:
         db.log("INFO", "devices", "Logged into Alexa")
         return JSONResponse({"ok": True, "needs_captcha": False, "logged_in": True})
-    return JSONResponse({"ok": False, "error": "Login did not complete - check credentials"})
+    return JSONResponse(
+        {"ok": False, "error": status.get("error_message") or "Login did not complete - check credentials"}
+    )
 
 
 @app.post("/devices/alexa/login/captcha")
@@ -412,6 +435,24 @@ async def alexa_login_captcha(request: Request, captcha: str = Form(...)):
         db.log("INFO", "devices", "Logged into Alexa (after captcha)")
         return JSONResponse({"ok": True, "logged_in": True})
     return JSONResponse({"ok": False, "error": "Still not logged in - captcha may be wrong"})
+
+
+@app.post("/devices/alexa/login/2fa")
+async def alexa_login_2fa(request: Request, code: str = Form(...)):
+    login = _alexa_login_state.get("login")
+    if login is None:
+        return JSONResponse({"ok": False, "error": "Login session expired, start again"})
+    try:
+        await alexa_mod.continue_login(login, securitycode=code)
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse({"ok": False, "error": str(exc)})
+    status = login.status or {}
+    if status.get("securitycode_required"):
+        return JSONResponse({"ok": False, "error": "Still not logged in - that code may be wrong or expired"})
+    if status.get("login_successful") or login.session:
+        db.log("INFO", "devices", "Logged into Alexa (after 2FA)")
+        return JSONResponse({"ok": True, "logged_in": True})
+    return JSONResponse({"ok": False, "error": status.get("error_message") or "Still not logged in"})
 
 
 @app.post("/devices/alexa/discover")

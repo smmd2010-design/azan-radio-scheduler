@@ -188,6 +188,15 @@ async function alexaLoginStart(evt) {
       </form>`;
     return false;
   }
+  if (resp.needs_2fa) {
+    status.innerHTML = `
+      <p class="muted">Amazon sent a verification code (by text or email, or from your authenticator app) to finish logging in. Enter it below.</p>
+      <form onsubmit="return alexaTwoFactor(event)" class="row">
+        <input name="code" placeholder="Enter the verification code" required>
+        <button type="submit" style="margin:0;">Submit</button>
+      </form>`;
+    return false;
+  }
   if (resp.logged_in) { location.reload(); }
   return false;
 }
@@ -195,6 +204,15 @@ async function alexaLoginStart(evt) {
 async function alexaCaptcha(evt) {
   evt.preventDefault();
   const resp = await post('/devices/alexa/login/captcha', {captcha: evt.target.captcha.value});
+  const status = document.getElementById('alexa-login-status');
+  if (!resp.ok) { status.innerHTML = `<p class="flash error">${resp.error}</p>`; return false; }
+  if (resp.logged_in) { location.reload(); }
+  return false;
+}
+
+async function alexaTwoFactor(evt) {
+  evt.preventDefault();
+  const resp = await post('/devices/alexa/login/2fa', {code: evt.target.code.value});
   const status = document.getElementById('alexa-login-status');
   if (!resp.ok) { status.innerHTML = `<p class="flash error">${resp.error}</p>`; return false; }
   if (resp.logged_in) { location.reload(); }
