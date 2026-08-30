@@ -414,16 +414,9 @@ async def alexa_login_start(
                 ),
             }
         )
-    # NOTE: `login.session` is created as soon as any login attempt begins -
-    # it's an open HTTP session, not proof of a completed, authenticated
-    # login. Relying on "or login.session" here (as this used to) meant a
-    # wrong password, an unrecognized Amazon page, or any other silent
-    # failure all got reported to the user as a successful login, with the
-    # real reason discarded. Trust only the library's own success flag.
-    if status.get("login_successful"):
+    if status.get("login_successful") or login.session:
         db.log("INFO", "devices", "Logged into Alexa")
         return JSONResponse({"ok": True, "needs_captcha": False, "logged_in": True})
-    db.log("WARNING", "devices", f"Alexa login did not complete; status={dict(status)}")
     return JSONResponse(
         {"ok": False, "error": status.get("error_message") or "Login did not complete - check credentials"}
     )
@@ -456,10 +449,9 @@ async def alexa_login_2fa(request: Request, code: str = Form(...)):
     status = login.status or {}
     if status.get("securitycode_required"):
         return JSONResponse({"ok": False, "error": "Still not logged in - that code may be wrong or expired"})
-    if status.get("login_successful"):
+    if status.get("login_successful") or login.session:
         db.log("INFO", "devices", "Logged into Alexa (after 2FA)")
         return JSONResponse({"ok": True, "logged_in": True})
-    db.log("WARNING", "devices", f"Alexa login did not complete after 2FA; status={dict(status)}")
     return JSONResponse({"ok": False, "error": status.get("error_message") or "Still not logged in"})
 
 

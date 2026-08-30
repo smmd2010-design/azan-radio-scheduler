@@ -1,0 +1,236 @@
+{% extends "base.html" %}
+{% block content %}
+
+<div class="card">
+  <h2>Configured devices</h2>
+  {% if not devices %}
+    <p class="muted">No devices yet — add one from an ecosystem below.</p>
+  {% else %}
+  <table>
+    <tr><th>Label</th><th>Ecosystem</th><th>Enabled</th><th>Test</th><th></th></tr>
+    {% for d in devices %}
+    <tr>
+      <td>{{ d.label }}</td>
+      <td>{{ backend_labels[d.backend] }}</td>
+      <td>
+        <form method="post" action="/devices/{{ d.id }}/toggle" style="display:inline">
+          <input type="hidden" name="enabled" value="{{ 'false' if d.enabled else 'true' }}">
+          <button type="submit" class="secondary" style="margin:0;padding:4px 10px;">{{ 'Disable' if d.enabled else 'Enable' }}</button>
+        </form>
+      </td>
+      <td>
+        <button class="secondary" style="margin:0;padding:4px 10px;" onclick="testDevice(this, {{ d.id }}, 'start')">Start</button>
+        <button class="secondary" style="margin:0;padding:4px 10px;" onclick="testDevice(this, {{ d.id }}, 'stop')">Stop</button>
+        <div id="test-status-{{ d.id }}" class="test-status"></div>
+      </td>
+      <td>
+        <form method="post" action="/devices/{{ d.id }}/delete" style="display:inline" onsubmit="return confirm('Remove this device?')">
+          <button type="submit" class="danger" style="margin:0;padding:4px 10px;">Remove</button>
+        </form>
+      </td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% endif %}
+</div>
+
+<div class="card">
+  <h2>Add a Google Home / Nest speaker</h2>
+  <p class="muted">Discovery scans your local network for a few seconds. The speaker must already be set up in the Google Home app.</p>
+  <button onclick="discoverGoogle()">Discover Google speakers</button>
+  <div id="google-list"></div>
+</div>
+
+<div class="card">
+  <h2>Add an Apple HomePod</h2>
+  <p class="muted">Pairing is one-time: your HomePod will show a PIN code to enter here.</p>
+  <button onclick="discoverHomepod()">Discover HomePods</button>
+  <div id="homepod-list"></div>
+</div>
+
+<div class="card">
+  <h2>Add an Amazon Alexa / Echo device</h2>
+  {% if alexa_logged_in %}
+    <p class="muted">Logged into Alexa. You can discover devices now.</p>
+    <button onclick="discoverAlexa()">Discover Alexa devices</button>
+    <div id="alexa-list"></div>
+  {% else %}
+    <p class="muted">Log into your Amazon account once. This uses an unofficial API — if Amazon shows a security check you'll be asked to solve it here.</p>
+    <form id="alexa-login-form" onsubmit="return alexaLoginStart(event)">
+      <label>Amazon login domain</label>
+      <input type="text" name="login_url" value="amazon.com">
+      <label>Email</label>
+      <input type="email" name="email" required>
+      <label>Password</label>
+      <input type="password" name="password" required>
+      <label>TOTP/2FA secret (optional)</label>
+      <input type="text" name="otp_secret">
+      <button type="submit">Log in</button>
+    </form>
+    <div id="alexa-login-status"></div>
+  {% endif %}
+</div>
+
+<script>
+async function post(url, data) {
+  const body = new URLSearchParams(data || {});
+  const resp = await fetch(url, {method: 'POST', body});
+  return resp.json();
+}
+
+async function testDevice(btn, id, action) {
+  // Give instant, unmistakable feedback the moment the button is pressed -
+  // don't wait for the network round-trip (device discovery + connect can
+  // take several seconds) before showing *something* happened.
+  const row = btn.closest('tr');
+  const buttons = row.querySelectorAll('button');
+  const statusEl = document.getElementById('test-status-' + id);
+  const originalLabel = btn.textContent;
+
+  buttons.forEach(b => b.disabled = true);
+  btn.innerHTML = `<span class="spinner"></span>${action === 'start' ? 'Starting…' : 'Stopping…'}`;
+  statusEl.className = 'test-status';
+  statusEl.textContent = 'Sending command to the device…';
+
+  try {
+    const resp = await post(`/devices/${id}/test`, {action});
+    statusEl.textContent = resp.message || (resp.ok ? 'OK' : 'Failed');
+    statusEl.classList.add(resp.ok ? 'ok' : 'fail');
+  } catch (e) {
+    statusEl.textContent = 'Could not reach the app to run the test — check the NAS/network.';
+    statusEl.classList.add('fail');
+  } finally {
+    buttons.forEach(b => b.disabled = false);
+    btn.textContent = originalLabel;
+  }
+}
+
+async function discoverGoogle() {
+  const el = document.getElementById('google-list');
+  el.innerHTML = '<p class="muted">Scanning…</p>';
+  const resp = await post('/devices/google/discover');
+  if (!resp.ok) { el.innerHTML = `<p class="flash error">${resp.error}</p>`; return; }
+  if (resp.devices.length === 0) { el.innerHTML = '<p class="muted">No Chromecast/Google speakers found.</p>'; return; }
+  el.innerHTML = resp.devices.map(name => `
+    <form onsubmit="return addDevice(event, '/devices/google/add', '${name}')" class="row">
+      <input type="hidden" name="target" value="${name}">
+      <input name="label" value="${name}" style="max-width:220px;">
+      <button type="submit" style="margin:0;">Add "${name}"</button>
+    </form>`).join('');
+}
+
+async function discoverHomepod() {
+  const el = document.getElementById('homepod-list');
+  el.innerHTML = '<p class="muted">Scanning…</p>';
+  const resp = await post('/devices/homepod/discover');
+  if (!resp.ok) { el.innerHTML = `<p class="flash error">${resp.error}</p>`; return; }
+  if (resp.devices.length === 0) { el.innerHTML = '<p class="muted">No AirPlay/HomePod devices found.</p>'; return; }
+  el.innerHTML = resp.devices.map(name => `
+    <div class="row">
+      <span>${name}</span>
+      <button onclick="beginPair('${name}')">Pair</button>
+    </div>
+    <div id="pair-area-${cssId(name)}"></div>`).join('');
+}
+
+function cssId(s) { return s.replace(/[^a-zA-Z0-9]/g, '_'); }
+
+async function beginPair(name) {
+  const area = document.getElementById('pair-area-' + cssId(name));
+  area.innerHTML = '<p class="muted">Starting pairing… check the HomePod for a PIN.</p>';
+  const resp = await post('/devices/homepod/pair/begin', {target: name});
+  if (!resp.ok) { area.innerHTML = `<p class="flash error">${resp.error}</p>`; return; }
+  area.innerHTML = `
+    <form onsubmit="return finishPair(event, '${name}')" class="row">
+      <input name="pin" placeholder="PIN from HomePod" style="max-width:140px;" required>
+      <button type="submit" style="margin:0;">Confirm PIN</button>
+    </form>`;
+}
+
+async function finishPair(evt, name) {
+  evt.preventDefault();
+  const pin = evt.target.pin.value;
+  const area = document.getElementById('pair-area-' + cssId(name));
+  const resp = await post('/devices/homepod/pair/finish', {target: name, pin});
+  if (!resp.ok) { area.innerHTML = `<p class="flash error">${resp.error}</p>`; return false; }
+  area.innerHTML = `
+    <form onsubmit="return addDevice(event, '/devices/homepod/add', '${name}')" class="row">
+      <input type="hidden" name="target" value="${name}">
+      <input name="label" value="${name}" style="max-width:220px;">
+      <button type="submit" style="margin:0;">Paired! Add "${name}"</button>
+    </form>`;
+  return false;
+}
+
+async function addDevice(evt, url, target) {
+  evt.preventDefault();
+  const label = evt.target.label.value;
+  const body = new URLSearchParams({label, target});
+  await fetch(url, {method: 'POST', body});
+  location.reload();
+  return false;
+}
+
+async function alexaLoginStart(evt) {
+  evt.preventDefault();
+  const f = evt.target;
+  const resp = await post('/devices/alexa/login/start', {
+    login_url: f.login_url.value, email: f.email.value, password: f.password.value, otp_secret: f.otp_secret.value
+  });
+  const status = document.getElementById('alexa-login-status');
+  if (!resp.ok) { status.innerHTML = `<p class="flash error">${resp.error}</p>`; return false; }
+  if (resp.needs_captcha) {
+    status.innerHTML = `
+      <img src="${resp.captcha_image_url}" style="background:#fff;padding:6px;border-radius:6px;">
+      <form onsubmit="return alexaCaptcha(event)" class="row">
+        <input name="captcha" placeholder="Enter the code shown" required>
+        <button type="submit" style="margin:0;">Submit</button>
+      </form>`;
+    return false;
+  }
+  if (resp.needs_2fa) {
+    status.innerHTML = `
+      <p class="muted">Amazon sent a verification code (by text or email, or from your authenticator app) to finish logging in. Enter it below.</p>
+      <form onsubmit="return alexaTwoFactor(event)" class="row">
+        <input name="code" placeholder="Enter the verification code" required>
+        <button type="submit" style="margin:0;">Submit</button>
+      </form>`;
+    return false;
+  }
+  if (resp.logged_in) { location.reload(); }
+  return false;
+}
+
+async function alexaCaptcha(evt) {
+  evt.preventDefault();
+  const resp = await post('/devices/alexa/login/captcha', {captcha: evt.target.captcha.value});
+  const status = document.getElementById('alexa-login-status');
+  if (!resp.ok) { status.innerHTML = `<p class="flash error">${resp.error}</p>`; return false; }
+  if (resp.logged_in) { location.reload(); }
+  return false;
+}
+
+async function alexaTwoFactor(evt) {
+  evt.preventDefault();
+  const resp = await post('/devices/alexa/login/2fa', {code: evt.target.code.value});
+  const status = document.getElementById('alexa-login-status');
+  if (!resp.ok) { status.innerHTML = `<p class="flash error">${resp.error}</p>`; return false; }
+  if (resp.logged_in) { location.reload(); }
+  return false;
+}
+
+async function discoverAlexa() {
+  const el = document.getElementById('alexa-list');
+  el.innerHTML = '<p class="muted">Loading devices on this account…</p>';
+  const resp = await post('/devices/alexa/discover');
+  if (!resp.ok) { el.innerHTML = `<p class="flash error">${resp.error}</p>`; return; }
+  if (resp.devices.length === 0) { el.innerHTML = '<p class="muted">No Alexa devices found on this account.</p>'; return; }
+  el.innerHTML = resp.devices.map(d => `
+    <form onsubmit="return addDevice(event, '/devices/alexa/add', '${d.serial}')" class="row">
+      <input type="hidden" name="target" value="${d.serial}">
+      <input name="label" value="${d.name}" style="max-width:220px;">
+      <button type="submit" style="margin:0;">Add "${d.name}"</button>
+    </form>`).join('');
+}
+</script>
+{% endblock %}

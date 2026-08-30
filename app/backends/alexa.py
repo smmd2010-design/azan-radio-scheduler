@@ -94,9 +94,20 @@ async def continue_login(login: AlexaLogin, **data: str) -> None:
 
 
 async def get_cached_login() -> AlexaLogin | None:
-    """Reuse the already-authenticated login object if one exists in this process."""
+    """Reuse the already-authenticated login object if one exists in this process.
+
+    Checking `.session` here used to be enough to make the UI *and* every
+    caller below believe login had succeeded, but a session object exists
+    the moment any login attempt starts - success or failure. Requiring the
+    login library's own "login_successful" flag is what actually reflects
+    whether the account is authenticated.
+    """
     global _login_singleton
-    if _login_singleton is not None and _login_singleton.session:
+    if (
+        _login_singleton is not None
+        and _login_singleton.session
+        and (_login_singleton.status or {}).get("login_successful")
+    ):
         return _login_singleton
     return None
 
