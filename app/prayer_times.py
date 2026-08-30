@@ -64,8 +64,17 @@ def _find_field(row: dict, canonical: str) -> str | None:
 
 async def _fetch_muis_for_date(date_str: str) -> dict[str, str] | None:
     resource_id = db.get_setting(MUIS_RESOURCE_ID_SETTING, DEFAULT_MUIS_RESOURCE_ID)
-    params = {"resource_id": resource_id, "q": date_str, "limit": 5}
-    async with httpx.AsyncClient(timeout=15) as client:
+    # Deliberately no `q=`/`filters=` server-side search here: data.gov.sg's
+    # datastore_search has returned a 409 Conflict for this resource whenever
+    # either of those params is present (confirmed empirically - a plain
+    # resource_id+limit+offset request succeeds every time). The whole
+    # dataset is only ~365 rows for a year, so we just pull a generous batch
+    # and find our date client-side with the same case-insensitive column
+    # matching we already need for the yearly column-name drift anyway. This
+    # is *more* robust than server-side filtering, not a workaround: it does
+    # not depend on data.gov.sg's exact column-name casing for a given year.
+    params = {"resource_id": resource_id, "limit": 1000}
+    async with httpx.AsyncClient(timeout=20) as client:
         resp = await client.get(MUIS_API_URL, params=params)
         resp.raise_for_status()
         payload = resp.json()
