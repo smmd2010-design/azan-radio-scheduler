@@ -22,22 +22,39 @@ from .base import BackendResult, PlayerBackend
 logger = logging.getLogger("azan.backends.google_cast")
 
 
-def _discover_by_name(name: str, timeout: float = 10.0):
+def _discover_and_connect(name: str, timeout: float = 10.0):
+    """
+    Find the named Chromecast and wait for its socket connection to come up,
+    keeping the zeroconf discovery browser alive the whole time.
+
+    This used to be two separate steps - discover-and-stop-browser, then
+    `cast.wait()` afterwards in each caller - which tore down the zeroconf
+    browser before the Chromecast object had actually finished connecting.
+    That is what was causing every single start/stop to silently hang for
+    the full 10s timeout and fail: pychromecast's connection setup for the
+    returned Chromecast object depends on the browser still being alive,
+    even though the *discovery* part (finding the device by name) had
+    already succeeded. Plain TCP/ping connectivity to the device was never
+    the problem - confirmed separately, both worked instantly.
+    """
     chromecasts, browser = pychromecast.get_chromecasts(timeout=timeout)
     try:
-        for cc in chromecasts:
-            if cc.name.strip().lower() == name.strip().lower():
-                return cc
-        return None
+        cast = next(
+            (cc for cc in chromecasts if cc.name.strip().lower() == name.strip().lower()),
+            None,
+        )
+        if cast is None:
+            return None
+        cast.wait(timeout=10)
+        return cast
     finally:
         pychromecast.discovery.stop_discovery(browser)
 
 
 def _start_sync(name: str, stream_url: str, content_type: str) -> BackendResult:
-    cast = _discover_by_name(name)
+    cast = _discover_and_connect(name)
     if cast is None:
         return BackendResult(ok=False, message=f"No Chromecast device named '{name}' found on the network")
-    cast.wait(timeout=10)
     mc = cast.media_controller
     mc.play_media(
         stream_url,
@@ -51,11 +68,10 @@ def _start_sync(name: str, stream_url: str, content_type: str) -> BackendResult:
 
 
 def _stop_sync(name: str) -> BackendResult:
-    cast = _discover_by_name(name)
+    cast = _discover_and_connect(name)
     if cast is None:
         # Already off the network / already stopped - not an error for our purposes.
         return BackendResult(ok=True, message=f"'{name}' not found (assumed already stopped)")
-    cast.wait(timeout=10)
     cast.media_controller.stop()
     return BackendResult(ok=True, message=f"Stopped '{name}'")
 
