@@ -1,9 +1,13 @@
 FROM python:3.11-slim
 
-# Needed for pychromecast/pyatv's network discovery (zeroconf/mDNS) and for
-# bcrypt/cryptography wheels that occasionally need to build from source.
+# build-essential/python3-dev: some deps (bcrypt, cryptography, aiohttp's
+# C speedups) occasionally need to build from source if no prebuilt wheel
+# matches the exact platform. ca-certificates: needed for the HTTPS calls
+# to data.gov.sg / the radio stream to trust valid certs.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
+    python3-dev \
+    ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

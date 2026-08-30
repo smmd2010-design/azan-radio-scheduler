@@ -17,17 +17,26 @@ HomePod backends, or the scheduler loop itself.
 
 Login is a small multi-step wizard because Amazon may show a CAPTCHA or
 ask for a 2FA/OTP code:
-  1. start_login(email, password, otp_secret) -> attempts login
+  1. get_login(email, password, otp_secret) -> attempts login (reusing a
+     saved session if one exists)
   2. if login.status contains "captcha_required", the UI shows the
      captcha image and calls continue_login(captcha=...)
-  3. once logged in, cookies are saved to disk and reused on every
-     subsequent start (including after a container restart)
+  3. once logged in, alexapy persists its own session cookies to disk
+     (via save_cookiefile(), see `_outputpath` below) and reuses them on
+     every subsequent start, including after a container restart.
+
+Cookie persistence deliberately uses alexapy's OWN load_cookie()/
+save_cookiefile() methods rather than a custom pickle file: alexapy writes
+a specific versioned JSON structure (and migrates older formats) that only
+its own loader round-trips correctly. `outputpath` is the hook alexapy
+uses to turn its internal relative filenames (e.g.
+".storage/amazon.com.<email>.cookies") into real paths on disk - it must
+map every such name under our persistent data volume.
 """
 
 from __future__ import annotations
 
 import logging
-import pickle
 from pathlib import Path
 
 from alexapy import AlexaAPI, AlexaLogin
@@ -37,7 +46,6 @@ from .base import BackendResult, PlayerBackend
 logger = logging.getLogger("azan.backends.alexa")
 
 DATA_DIR = Path(__file__).resolve().parent.parent.parent / "data" / "alexa"
-COOKIE_FILE = DATA_DIR / "cookies.pickle"
 
 # Amazon Alexa accounts registered in Singapore normally still authenticate
 # against the amazon.com marketplace domain (there is no separate Alexa
@@ -50,31 +58,31 @@ MUSIC_PROVIDER_ID = "TUNEIN"
 _login_singleton: AlexaLogin | None = None
 
 
-def _cookie_output_path(_email: str) -> str:
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    return str(COOKIE_FILE)
+def _outputpath(relative_path: str) -> str:
+    full = DATA_DIR / relative_path
+    full.parent.mkdir(parents=True, exist_ok=True)
+    return str(full)
 
 
 async def get_login(url: str, email: str, password: str, otp_secret: str = "") -> AlexaLogin:
     global _login_singleton
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
     login = AlexaLogin(
         url=url or DEFAULT_LOGIN_URL,
         email=email,
         password=password,
-        outputpath=_cookie_output_path,
+        outputpath=_outputpath,
         otp_secret=otp_secret or "",
     )
-    if COOKIE_FILE.exists():
-        try:
-            with open(COOKIE_FILE, "rb") as f:
-                cookies = pickle.load(f)
-            await login.login(cookies=cookies)
-        except Exception:  # noqa: BLE001 - stale/corrupt cookie file, fall through to fresh login
-            logger.warning("Saved Alexa cookies could not be reused, doing a fresh login")
+    cookies = await login.load_cookie()
+    if cookies:
+        await login.login(cookies=cookies)
+        if not login.status.get("login_successful"):
+            logger.warning("Saved Alexa session was rejected, doing a fresh login")
             await login.login()
     else:
         await login.login()
+    if login.status.get("login_successful"):
+        await login.save_cookiefile()
     _login_singleton = login
     return login
 
@@ -82,17 +90,7 @@ async def get_login(url: str, email: str, password: str, otp_secret: str = "") -
 async def continue_login(login: AlexaLogin, **data: str) -> None:
     await login.login(data=data)
     if login.status.get("login_successful"):
-        _save_cookies(login)
-
-
-def _save_cookies(login: AlexaLogin) -> None:
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    try:
-        cookies = login.session.cookies.get_dict() if login.session else {}
-        with open(COOKIE_FILE, "wb") as f:
-            pickle.dump(cookies, f)
-    except Exception:
-        logger.exception("Failed to persist Alexa session cookies")
+        await login.save_cookiefile()
 
 
 async def get_cached_login() -> AlexaLogin | None:

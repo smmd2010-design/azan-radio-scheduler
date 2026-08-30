@@ -390,7 +390,6 @@ async def alexa_login_start(
             }
         )
     if status.get("login_successful") or login.session:
-        alexa_mod._save_cookies(login)
         db.log("INFO", "devices", "Logged into Alexa")
         return JSONResponse({"ok": True, "needs_captcha": False, "logged_in": True})
     return JSONResponse({"ok": False, "error": "Login did not complete - check credentials"})
