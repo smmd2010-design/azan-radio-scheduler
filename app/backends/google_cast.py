@@ -72,7 +72,21 @@ def _stop_sync(name: str) -> BackendResult:
     if cast is None:
         # Already off the network / already stopped - not an error for our purposes.
         return BackendResult(ok=True, message=f"'{name}' not found (assumed already stopped)")
-    cast.media_controller.stop()
+    mc = cast.media_controller
+    # pychromecast's stop() requires the media session id, which the media
+    # channel only learns *after* connecting, via its own background
+    # update_status() round-trip (triggered by channel_connected()). Calling
+    # stop() immediately after _discover_and_connect() races that round-trip
+    # and fails instantly every time - confirmed empirically: every single
+    # automatic and manual stop failed with "no session is active" even
+    # though the device was actively playing. block_until_active() waits for
+    # that round-trip the same way _start_sync already waits after
+    # play_media(). If no session ever shows up (nothing was actually
+    # playing), that's not an error for our purposes either.
+    mc.block_until_active(timeout=8)
+    if mc.status.media_session_id is None:
+        return BackendResult(ok=True, message=f"'{name}' has no active session (assumed already stopped)")
+    mc.stop()
     return BackendResult(ok=True, message=f"Stopped '{name}'")
 
 

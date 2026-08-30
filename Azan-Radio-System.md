@@ -3,7 +3,7 @@ tags: [nas, home-automation, azan, prayer-times, docker]
 project: SherifNAS
 ---
 
-> Source of truth for the code is the GitHub repo (linked once pushed). This note is a working copy of the README for reference in Obsidian.
+> Source of truth for the code: https://github.com/smmd2010-design/azan-radio-scheduler (private). This note is a working copy of the README for reference in Obsidian.
 
 # Azan Radio Scheduler
 
