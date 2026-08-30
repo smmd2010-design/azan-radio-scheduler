@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card">
+  <h2>Activity log (last 500)</h2>
+  <p class="muted">Full detail with tracebacks is also written to a rotating file inside the container at <code>/app/data/logs/azan.log</code>.</p>
+  <table>
+    <tr><th>Time</th><th>Level</th><th>Component</th><th>Message</th></tr>
+    {% for l in logs %}
+    <tr>
+      <td class="muted" style="white-space:nowrap;">{{ l.ts }}</td>
+      <td><span class="badge {{ 'ok' if l.level == 'INFO' else 'warn' if l.level == 'WARNING' else 'off' }}">{{ l.level }}</span></td>
+      <td>{{ l.component }}</td>
+      <td>{{ l.message }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+</div>
+{% endblock %}

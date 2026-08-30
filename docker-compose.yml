@@ -1,0 +1,23 @@
+services:
+  azan-radio-scheduler:
+    build: .
+    image: azan-radio-scheduler:latest
+    container_name: azan-radio-scheduler
+    restart: unless-stopped
+    # IMPORTANT: host networking is required, not optional. Google Cast
+    # (pychromecast) and AirPlay (pyatv) discovery both rely on mDNS
+    # multicast traffic on the local subnet, which a Docker bridge network
+    # blocks. On Synology's Container Manager, enable "Use the same
+    # network as Docker host" for this container (equivalent to
+    # network_mode: host below).
+    network_mode: host
+    environment:
+      - TZ=${TZ:-Asia/Singapore}
+    volumes:
+      - ./data:/app/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8730/healthz', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3

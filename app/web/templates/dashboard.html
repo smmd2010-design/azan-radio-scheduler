@@ -1,0 +1,100 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card">
+  <h2>Today — {{ today }}</h2>
+  <div id="countdown" class="muted" style="font-size:15px;margin-bottom:10px;">Loading countdown…</div>
+  <table>
+    <tr><th>Prayer</th><th>Time</th><th>Start</th><th>Stop</th></tr>
+    {% for p in prayer_rows %}
+    <tr>
+      <td>{{ p.label }}</td>
+      <td>{{ p.time }}</td>
+      <td>
+        {% if not p.scheduled %}<span class="badge off">not scheduled</span>
+        {% elif p.start_fired %}<span class="badge ok" title="{{ p.last_start_result }}">done</span>
+        {% else %}<span class="badge warn">pending</span>{% endif %}
+      </td>
+      <td>
+        {% if not p.scheduled %}<span class="badge off">—</span>
+        {% elif p.stop_fired %}<span class="badge ok" title="{{ p.last_stop_result }}">done</span>
+        {% elif p.start_fired %}<span class="badge warn">pending</span>
+        {% else %}<span class="badge off">—</span>{% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+  </table>
+</div>
+
+<div class="card">
+  <h2>Devices</h2>
+  {% if not devices %}
+    <p class="muted">No devices configured yet. Go to <a href="/devices">Devices</a> to add your speakers.</p>
+  {% else %}
+  <table>
+    <tr><th>Label</th><th>Ecosystem</th><th>Status</th></tr>
+    {% for d in devices %}
+    <tr>
+      <td>{{ d.label }}</td>
+      <td>{{ backend_labels[d.backend] }}</td>
+      <td>{% if d.enabled %}<span class="badge ok">enabled</span>{% else %}<span class="badge off">disabled</span>{% endif %}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% endif %}
+</div>
+
+<div class="card">
+  <h2>Recent activity</h2>
+  {% if not recent_logs %}
+    <p class="muted">Nothing logged yet.</p>
+  {% else %}
+  <table>
+    {% for l in recent_logs[:15] %}
+    <tr>
+      <td class="muted" style="white-space:nowrap;">{{ l.ts }}</td>
+      <td><span class="badge {{ 'ok' if l.level == 'INFO' else 'warn' if l.level == 'WARNING' else 'off' }}">{{ l.level }}</span></td>
+      <td>{{ l.component }}</td>
+      <td>{{ l.message }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  <p class="muted"><a href="/logs">View full log →</a></p>
+  {% endif %}
+</div>
+
+<script>
+const schedule = [
+  {% for p in prayer_rows %}
+  {% if p.scheduled %}
+  {name: {{ p.label|tojson }}, startAt: {{ p.start_at|tojson }}, stopAt: {{ p.stop_at|tojson }},
+   startFired: {{ 'true' if p.start_fired else 'false' }}, stopFired: {{ 'true' if p.stop_fired else 'false' }}},
+  {% endif %}
+  {% endfor %}
+];
+function fmt(ms) {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
+  return (h > 0 ? h + "h " : "") + m + "m " + sec + "s";
+}
+function tick() {
+  const el = document.getElementById('countdown');
+  const now = new Date();
+  let next = null;
+  for (const p of schedule) {
+    if (!p.startFired) { next = {label: p.name + " starts", at: new Date(p.startAt)}; break; }
+    if (!p.stopFired) { next = {label: p.name + " stops", at: new Date(p.stopAt)}; break; }
+  }
+  if (!next) {
+    el.textContent = "All of today's enabled prayers have been handled.";
+  } else {
+    const diff = next.at - now;
+    el.textContent = diff > 0
+      ? `Next: ${next.label} in ${fmt(diff)}`
+      : `Next: ${next.label} — due now (waiting for the scheduler's next check, every 15s)`;
+  }
+}
+tick();
+setInterval(tick, 1000);
+setInterval(() => location.reload(), 60000);
+</script>
+{% endblock %}

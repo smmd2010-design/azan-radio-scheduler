@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card">
+  <h2>First-run setup</h2>
+  <p class="muted">Set an admin password to protect this control panel before it starts scheduling anything.</p>
+  {% if error %}<div class="flash error">{{ error }}</div>{% endif %}
+  <form method="post" action="/setup">
+    <label>Admin password (min. 8 characters)</label>
+    <input type="password" name="password" required minlength="8">
+    <label>Confirm password</label>
+    <input type="password" name="confirm" required minlength="8">
+    <button type="submit">Set password &amp; continue</button>
+  </form>
+</div>
+{% endblock %}
