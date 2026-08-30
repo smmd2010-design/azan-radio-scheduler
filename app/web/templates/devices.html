@@ -19,8 +19,9 @@
         </form>
       </td>
       <td>
-        <button class="secondary" style="margin:0;padding:4px 10px;" onclick="testDevice({{ d.id }}, 'start')">Start</button>
-        <button class="secondary" style="margin:0;padding:4px 10px;" onclick="testDevice({{ d.id }}, 'stop')">Stop</button>
+        <button class="secondary" style="margin:0;padding:4px 10px;" onclick="testDevice(this, {{ d.id }}, 'start')">Start</button>
+        <button class="secondary" style="margin:0;padding:4px 10px;" onclick="testDevice(this, {{ d.id }}, 'stop')">Stop</button>
+        <div id="test-status-{{ d.id }}" class="test-status"></div>
       </td>
       <td>
         <form method="post" action="/devices/{{ d.id }}/delete" style="display:inline" onsubmit="return confirm('Remove this device?')">
@@ -30,7 +31,6 @@
     </tr>
     {% endfor %}
   </table>
-  <p id="test-result" class="muted"></p>
   {% endif %}
 </div>
 
@@ -78,9 +78,31 @@ async function post(url, data) {
   return resp.json();
 }
 
-async function testDevice(id, action) {
-  const resp = await post(`/devices/${id}/test`, {action});
-  document.getElementById('test-result').textContent = resp.message || (resp.ok ? 'OK' : 'Failed');
+async function testDevice(btn, id, action) {
+  // Give instant, unmistakable feedback the moment the button is pressed -
+  // don't wait for the network round-trip (device discovery + connect can
+  // take several seconds) before showing *something* happened.
+  const row = btn.closest('tr');
+  const buttons = row.querySelectorAll('button');
+  const statusEl = document.getElementById('test-status-' + id);
+  const originalLabel = btn.textContent;
+
+  buttons.forEach(b => b.disabled = true);
+  btn.innerHTML = `<span class="spinner"></span>${action === 'start' ? 'Starting…' : 'Stopping…'}`;
+  statusEl.className = 'test-status';
+  statusEl.textContent = 'Sending command to the device…';
+
+  try {
+    const resp = await post(`/devices/${id}/test`, {action});
+    statusEl.textContent = resp.message || (resp.ok ? 'OK' : 'Failed');
+    statusEl.classList.add(resp.ok ? 'ok' : 'fail');
+  } catch (e) {
+    statusEl.textContent = 'Could not reach the app to run the test — check the NAS/network.';
+    statusEl.classList.add('fail');
+  } finally {
+    buttons.forEach(b => b.disabled = false);
+    btn.textContent = originalLabel;
+  }
 }
 
 async function discoverGoogle() {

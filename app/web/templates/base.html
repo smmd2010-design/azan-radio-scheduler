@@ -44,6 +44,17 @@
     }
     button.secondary { background: #33424f; }
     button.danger { background: var(--danger); }
+    button:active { transform: scale(0.96); }
+    button:disabled { opacity: .6; cursor: not-allowed; transform: none; }
+    .spinner {
+      display: inline-block; width: 11px; height: 11px; margin-right: 6px;
+      border: 2px solid rgba(255,255,255,.35); border-top-color: #fff;
+      border-radius: 50%; vertical-align: -1px; animation: spin .6s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .test-status { margin: 8px 0 0; font-size: 13px; min-height: 18px; }
+    .test-status.ok { color: var(--accent); }
+    .test-status.fail { color: var(--danger); }
     .badge { padding: 2px 8px; border-radius: 999px; font-size: 12px; }
     .badge.ok { background: rgba(47,158,107,.2); color: var(--accent); }
     .badge.warn { background: rgba(217,164,65,.2); color: var(--warn); }
