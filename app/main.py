@@ -44,7 +44,6 @@ def _get_or_create_session_secret() -> str:
 # (a human is actively clicking through a setup flow) so process memory is
 # fine - nothing here needs to survive a restart.
 _pairing_sessions: dict[str, dict] = {}
-_alexa_login_state: dict = {}
 
 PRAYER_LABELS = {
     "fajr": "Fajr",
@@ -304,13 +303,16 @@ async def refresh_prayer_times_now(request: Request):
 @app.get("/devices", response_class=HTMLResponse)
 async def devices_get(request: Request):
     devices = db.list_devices()
+    ha_base_url = db.get_setting("ha_base_url", "") or ""
+    ha_token = db.get_setting("ha_token", "") or ""
     return templates.TemplateResponse(
         request,
         "devices.html",
         {
             "devices": devices,
             "backend_labels": BACKEND_LABELS,
-            "alexa_logged_in": (await alexa_mod.get_cached_login()) is not None,
+            "alexa_configured": bool(ha_base_url and ha_token),
+            "ha_base_url": ha_base_url,
         },
     )
 
@@ -371,111 +373,26 @@ async def homepod_add(request: Request, label: str = Form(...), target: str = Fo
     return RedirectResponse("/devices", status_code=303)
 
 
-@app.post("/devices/alexa/login/start")
-async def alexa_login_start(
-    request: Request,
-    email: str = Form(...),
-    password: str = Form(...),
-    otp_secret: str = Form(""),
-    login_url: str = Form("amazon.com"),
-):
-    try:
-        login = await alexa_mod.get_login(login_url, email, password, otp_secret)
-    except Exception as exc:  # noqa: BLE001
-        return JSONResponse({"ok": False, "error": str(exc)})
-    status = login.status or {}
-    if status.get("captcha_required"):
-        _alexa_login_state["login"] = login
-        return JSONResponse(
-            {
-                "ok": True,
-                "needs_captcha": True,
-                "captcha_image_url": status.get("captcha_image_url"),
-            }
-        )
-    # Amazon accounts with 2-step verification (2FA) turned on stop here and
-    # show a "we sent you a code" page instead of logging straight in. Before
-    # this check existed, that state fell through to the `login.session`
-    # fallback below and got misreported as a successful login - the account
-    # never actually finished authenticating, so later calls like the device
-    # list came back empty with no error to explain why.
-    if status.get("securitycode_required"):
-        _alexa_login_state["login"] = login
-        return JSONResponse({"ok": True, "needs_2fa": True})
-    if status.get("claimspicker_required") or status.get("authselect_required"):
-        return JSONResponse(
-            {
-                "ok": False,
-                "error": (
-                    "This account needs an extra verification step (e.g. choosing "
-                    "where to receive a code) that isn't supported here yet. If "
-                    "possible, simplify 2-step verification for this account to a "
-                    "single authenticator app or SMS code and try again."
-                ),
-            }
-        )
-    # NOTE: `login.session` is created as soon as any login attempt begins -
-    # it's an open HTTP session, not proof of a completed, authenticated
-    # login. Relying on "or login.session" here (as this used to) meant a
-    # wrong password, an unrecognized Amazon page, or any other silent
-    # failure all got reported to the user as a successful login, with the
-    # real reason discarded. Trust only the library's own success flag.
-    if status.get("login_successful"):
-        db.log("INFO", "devices", "Logged into Alexa")
-        return JSONResponse({"ok": True, "needs_captcha": False, "logged_in": True})
-    db.log("WARNING", "devices", f"Alexa login did not complete; status={dict(status)}")
-    return JSONResponse(
-        {"ok": False, "error": status.get("error_message") or "Login did not complete - check credentials"}
-    )
-
-
-@app.post("/devices/alexa/login/captcha")
-async def alexa_login_captcha(request: Request, captcha: str = Form(...)):
-    login = _alexa_login_state.get("login")
-    if login is None:
-        return JSONResponse({"ok": False, "error": "Login session expired, start again"})
-    try:
-        await alexa_mod.continue_login(login, captcha=captcha)
-    except Exception as exc:  # noqa: BLE001
-        return JSONResponse({"ok": False, "error": str(exc)})
-    if login.status.get("login_successful"):
-        db.log("INFO", "devices", "Logged into Alexa (after captcha)")
-        return JSONResponse({"ok": True, "logged_in": True})
-    return JSONResponse({"ok": False, "error": "Still not logged in - captcha may be wrong"})
-
-
-@app.post("/devices/alexa/login/2fa")
-async def alexa_login_2fa(request: Request, code: str = Form(...)):
-    login = _alexa_login_state.get("login")
-    if login is None:
-        return JSONResponse({"ok": False, "error": "Login session expired, start again"})
-    try:
-        await alexa_mod.continue_login(login, securitycode=code)
-    except Exception as exc:  # noqa: BLE001
-        return JSONResponse({"ok": False, "error": str(exc)})
-    status = login.status or {}
-    if status.get("securitycode_required"):
-        return JSONResponse({"ok": False, "error": "Still not logged in - that code may be wrong or expired"})
-    if status.get("login_successful"):
-        db.log("INFO", "devices", "Logged into Alexa (after 2FA)")
-        return JSONResponse({"ok": True, "logged_in": True})
-    db.log("WARNING", "devices", f"Alexa login did not complete after 2FA; status={dict(status)}")
-    return JSONResponse({"ok": False, "error": status.get("error_message") or "Still not logged in"})
+@app.post("/devices/alexa/config")
+async def alexa_config(request: Request, ha_base_url: str = Form(...), ha_token: str = Form(...)):
+    ha_base_url = ha_base_url.strip().rstrip("/")
+    ha_token = ha_token.strip()
+    ok, error = await alexa_mod.test_connection(ha_base_url, ha_token)
+    if not ok:
+        db.log("WARNING", "devices", f"Home Assistant connection test failed: {error}")
+        return JSONResponse({"ok": False, "error": error})
+    db.set_settings({"ha_base_url": ha_base_url, "ha_token": ha_token})
+    db.log("INFO", "devices", f"Connected to Home Assistant at {ha_base_url} for Alexa control")
+    return JSONResponse({"ok": True})
 
 
 @app.post("/devices/alexa/discover")
 async def alexa_discover(request: Request):
-    login = await alexa_mod.get_cached_login()
-    if login is None:
-        return JSONResponse({"ok": False, "error": "Log into Alexa first"})
     try:
-        devices = await alexa_mod.list_available_devices(login)
+        devices = await alexa_mod.list_available_devices()
     except Exception as exc:  # noqa: BLE001
         return JSONResponse({"ok": False, "error": str(exc)})
-    simplified = [
-        {"name": d.get("accountName"), "serial": d.get("serialNumber")} for d in devices
-    ]
-    return JSONResponse({"ok": True, "devices": simplified})
+    return JSONResponse({"ok": True, "devices": devices})
 
 
 @app.post("/devices/alexa/add")

@@ -50,24 +50,31 @@
 
 <div class="card">
   <h2>Add an Amazon Alexa / Echo device</h2>
-  {% if alexa_logged_in %}
-    <p class="muted">Logged into Alexa. You can discover devices now.</p>
+  <p class="muted">Alexa is controlled through your Home Assistant instance (with the "Alexa Media Player" HACS integration installed and logged into your Amazon account) rather than a direct Amazon login here.</p>
+  {% if alexa_configured %}
+    <p class="muted">Connected to Home Assistant at {{ ha_base_url }}.</p>
     <button onclick="discoverAlexa()">Discover Alexa devices</button>
     <div id="alexa-list"></div>
+    <details style="margin-top:12px;">
+      <summary class="muted" style="cursor:pointer;">Change Home Assistant connection</summary>
+      <form id="alexa-config-form" onsubmit="return alexaConfigSave(event)" style="margin-top:8px;">
+        <label>Home Assistant URL</label>
+        <input type="text" name="ha_base_url" value="{{ ha_base_url }}" placeholder="http://192.168.1.106:8123" required>
+        <label>Long-Lived Access Token</label>
+        <input type="password" name="ha_token" placeholder="paste a new token to replace the saved one" required>
+        <button type="submit">Save &amp; test connection</button>
+      </form>
+      <div id="alexa-config-status"></div>
+    </details>
   {% else %}
-    <p class="muted">Log into your Amazon account once. This uses an unofficial API — if Amazon shows a security check you'll be asked to solve it here.</p>
-    <form id="alexa-login-form" onsubmit="return alexaLoginStart(event)">
-      <label>Amazon login domain</label>
-      <input type="text" name="login_url" value="amazon.com">
-      <label>Email</label>
-      <input type="email" name="email" required>
-      <label>Password</label>
-      <input type="password" name="password" required>
-      <label>TOTP/2FA secret (optional)</label>
-      <input type="text" name="otp_secret">
-      <button type="submit">Log in</button>
+    <form id="alexa-config-form" onsubmit="return alexaConfigSave(event)">
+      <label>Home Assistant URL</label>
+      <input type="text" name="ha_base_url" value="http://192.168.1.106:8123" required>
+      <label>Long-Lived Access Token</label>
+      <input type="password" name="ha_token" required>
+      <button type="submit">Save &amp; test connection</button>
     </form>
-    <div id="alexa-login-status"></div>
+    <div id="alexa-config-status"></div>
   {% endif %}
 </div>
 
@@ -171,63 +178,35 @@ async function addDevice(evt, url, target) {
   return false;
 }
 
-async function alexaLoginStart(evt) {
+async function alexaConfigSave(evt) {
   evt.preventDefault();
   const f = evt.target;
-  const resp = await post('/devices/alexa/login/start', {
-    login_url: f.login_url.value, email: f.email.value, password: f.password.value, otp_secret: f.otp_secret.value
-  });
-  const status = document.getElementById('alexa-login-status');
-  if (!resp.ok) { status.innerHTML = `<p class="flash error">${resp.error}</p>`; return false; }
-  if (resp.needs_captcha) {
-    status.innerHTML = `
-      <img src="${resp.captcha_image_url}" style="background:#fff;padding:6px;border-radius:6px;">
-      <form onsubmit="return alexaCaptcha(event)" class="row">
-        <input name="captcha" placeholder="Enter the code shown" required>
-        <button type="submit" style="margin:0;">Submit</button>
-      </form>`;
-    return false;
+  const btn = f.querySelector('button[type="submit"]');
+  const status = document.getElementById('alexa-config-status');
+  const originalLabel = btn.textContent;
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span>Testing…';
+  status.innerHTML = '';
+  try {
+    const resp = await post('/devices/alexa/config', {ha_base_url: f.ha_base_url.value, ha_token: f.ha_token.value});
+    if (!resp.ok) { status.innerHTML = `<p class="flash error">${resp.error}</p>`; return false; }
+    location.reload();
+  } finally {
+    btn.disabled = false;
+    btn.textContent = originalLabel;
   }
-  if (resp.needs_2fa) {
-    status.innerHTML = `
-      <p class="muted">Amazon sent a verification code (by text or email, or from your authenticator app) to finish logging in. Enter it below.</p>
-      <form onsubmit="return alexaTwoFactor(event)" class="row">
-        <input name="code" placeholder="Enter the verification code" required>
-        <button type="submit" style="margin:0;">Submit</button>
-      </form>`;
-    return false;
-  }
-  if (resp.logged_in) { location.reload(); }
-  return false;
-}
-
-async function alexaCaptcha(evt) {
-  evt.preventDefault();
-  const resp = await post('/devices/alexa/login/captcha', {captcha: evt.target.captcha.value});
-  const status = document.getElementById('alexa-login-status');
-  if (!resp.ok) { status.innerHTML = `<p class="flash error">${resp.error}</p>`; return false; }
-  if (resp.logged_in) { location.reload(); }
-  return false;
-}
-
-async function alexaTwoFactor(evt) {
-  evt.preventDefault();
-  const resp = await post('/devices/alexa/login/2fa', {code: evt.target.code.value});
-  const status = document.getElementById('alexa-login-status');
-  if (!resp.ok) { status.innerHTML = `<p class="flash error">${resp.error}</p>`; return false; }
-  if (resp.logged_in) { location.reload(); }
   return false;
 }
 
 async function discoverAlexa() {
   const el = document.getElementById('alexa-list');
-  el.innerHTML = '<p class="muted">Loading devices on this account…</p>';
+  el.innerHTML = '<p class="muted">Loading devices from Home Assistant…</p>';
   const resp = await post('/devices/alexa/discover');
   if (!resp.ok) { el.innerHTML = `<p class="flash error">${resp.error}</p>`; return; }
-  if (resp.devices.length === 0) { el.innerHTML = '<p class="muted">No Alexa devices found on this account.</p>'; return; }
+  if (resp.devices.length === 0) { el.innerHTML = '<p class="muted">No Alexa Media Player devices found via Home Assistant. Make sure that integration is set up there.</p>'; return; }
   el.innerHTML = resp.devices.map(d => `
-    <form onsubmit="return addDevice(event, '/devices/alexa/add', '${d.serial}')" class="row">
-      <input type="hidden" name="target" value="${d.serial}">
+    <form onsubmit="return addDevice(event, '/devices/alexa/add', '${d.entity_id}')" class="row">
+      <input type="hidden" name="target" value="${d.entity_id}">
       <input name="label" value="${d.name}" style="max-width:220px;">
       <button type="submit" style="margin:0;">Add "${d.name}"</button>
     </form>`).join('');

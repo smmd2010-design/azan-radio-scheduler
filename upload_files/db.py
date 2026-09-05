@@ -103,6 +103,10 @@ DEFAULT_SETTINGS = {
     "aladhan_longitude": "103.8198",
     "aladhan_method": "3",  # Muslim World League, used only in generic mode
     "setup_complete": "0",
+    # Alexa is controlled through Home Assistant (its Alexa Media Player
+    # HACS integration), not a direct Amazon login - see app/backends/alexa.py.
+    "ha_base_url": "",
+    "ha_token": "",
 }
 
 
