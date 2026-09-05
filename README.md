@@ -6,40 +6,52 @@ work. Built for Sherif's Synology NAS (playing Warna 94.2FM in Singapore),
 but nothing about it is hardcoded to that setup: it's meant to be handed to
 anyone else to self-host on their own NAS, anywhere.
 
+## About
+
+This project was created by Sherif, for the sake of Allah — built freely so
+that anyone, anywhere, can use it to have the azan called automatically on
+their own smart speakers at prayer time. It's free and open source (MIT
+licensed, see below) with no restrictions on using, modifying, or sharing
+it. If it benefits you or your family, that's the whole purpose.
+
+**New here?** See the [User Manual](docs/user-manual/) for a plain-language,
+non-technical guide to using the app day-to-day (adding speakers, changing
+settings, etc.) — available in English, Arabic, Malay, Urdu, and French.
+
 ## How it works
 
-Every 15 seconds a small scheduler loop checks the current time against
-today's prayer schedule. When a prayer time arrives, it tells every enabled
-speaker to start playing; after the configured duration, it tells them to
-stop. Prayer times are refreshed daily from an official source (see below)
-and cached locally, so a bad internet day never causes a silent outage.
+Every 5 seconds a small scheduler loop checks the current time against
+today's prayer schedule. When a prayer time arrives, it tells every speaker
+assigned to that prayer to start playing; after the configured duration, it
+tells them to stop. Prayer times are refreshed daily from an official source
+(see below) and cached locally, so a bad internet day never causes a silent
+outage.
 
 It talks to three completely different smart-speaker ecosystems, each
-through its own isolated backend module — a failure in one (say, an
-expired Alexa login) can never block or crash the other two, or the
-scheduler itself:
+through its own isolated backend module — a failure in one (say, a
+Chromecast that's briefly slow to respond) can never block or crash the
+other two, or the scheduler itself. Each device can also be assigned to
+specific prayers only (e.g. Fajr + Isha on a bedroom speaker) from the
+Devices page:
 
 | Ecosystem | How it's controlled | Robustness |
 |---|---|---|
 | Google Home / Nest | Official Cast protocol (`pychromecast`) — casts the stream URL directly | Most reliable — no account login needed |
 | Apple HomePod | AirPlay (`pyatv`) — one-time pairing, then streams the URL | Solid, but Apple's own AirPlay stack for HomePod streaming is less mature than for Apple TV; a HomeKit/Homebridge-automation fallback is documented below if needed |
-| Amazon Alexa / Echo | Unofficial account login (`alexapy`) emulating "Alexa, play `<station>` on TuneIn" | Least solid leg — no official API exists for this on Alexa at all; isolated so its failures don't affect anything else |
+| Amazon Alexa / Echo | Via a Home Assistant instance running the community "Alexa Media Player" integration (HACS) — Home Assistant's own login handles the Amazon account; this app just calls Home Assistant's REST API | Requires a separate Home Assistant instance on the same network, but avoids logging into Amazon directly at all, which is far more reliable long-term |
 
 ## Verifying the stream URL
 
 The app ships with a default stream URL for Warna 94.2FM
 (`https://playerservices.streamtheworld.com/api/livestream-redirect/WARNA942FMAAC_SC`),
-found via a third-party station directory that lists Mediacorp/RTM
-stations' actual StreamTheWorld CDN endpoints. **This could not be
-verified end-to-end from the build environment**, which has no route to
-the public internet at all — the very first thing to do after deploying is
-use the **Test Now** button on a device in the Devices page and confirm
-you actually hear the station. If it doesn't work, the Settings page lets
-you paste a different stream URL with no code changes needed — the
-easiest way to find a working one is opening
-[melisten.sg/radio/warna-942fm](https://www.melisten.sg/radio/warna-942fm)
-in a desktop browser, hitting play, and checking the browser's Network tab
-for the actual audio request URL.
+confirmed working in live testing. If you're pointing this at a different
+station, use the **Start** test button on a device in the Devices page
+after changing the URL, to confirm you actually hear it. The Settings page
+lets you paste a different stream URL with no code changes needed — the
+easiest way to find a station's real stream URL is opening its page on a
+site like [melisten.sg](https://www.melisten.sg) in a desktop browser,
+hitting play, and checking the browser's Network tab for the actual audio
+request URL.
 
 ## Prayer time source
 
@@ -78,8 +90,18 @@ whole day because of one network hiccup.
    - **Google Home**: click Discover, then Add.
    - **HomePod**: click Discover, click Pair, enter the PIN shown on the
      HomePod, then Add.
-   - **Alexa**: log into your Amazon account once (solving a CAPTCHA here
-     if Amazon shows one), then Discover, then Add.
+   - **Alexa**: needs a [Home Assistant](https://www.home-assistant.io/)
+     instance on the same network with the community
+     [Alexa Media Player](https://github.com/alandtse/alexa_media_player)
+     integration installed (via [HACS](https://hacs.xyz/)) and logged into
+     your Amazon account — Home Assistant's own login flow handles the
+     Amazon side, including any 2FA. Once that's set up, generate a
+     Home Assistant **Long-Lived Access Token** (profile → Security), paste
+     your Home Assistant URL and that token into the Alexa card on the
+     Devices page, then click Discover and Add for each Echo/speaker you
+     want.
+   - Each added device can be narrowed to specific prayers via the
+     **Plays for** checkboxes next to it (defaults to all five).
 8. Use the **Start/Stop** test buttons next to each device before trusting
    it to a real prayer time.
 
@@ -117,10 +139,11 @@ app/
     base.py             Shared interface + timeout/retry wrapper
     google_cast.py       Google Home / Nest (pychromecast)
     homepod_airplay.py   Apple HomePod (pyatv)
-    alexa.py             Amazon Alexa (alexapy)
+    alexa.py             Amazon Alexa (via Home Assistant's Alexa Media Player)
   web/                  Jinja2 templates + static assets for the admin UI
 data/                   Everything persistent (Docker volume): SQLite DB, logs,
-                         AirPlay/Alexa credentials
+                         AirPlay pairing credentials, and the Home Assistant
+                         URL/token used for Alexa (stored in the DB, not here)
 Dockerfile, docker-compose.yml, requirements.txt, .env.example
 ```
 
