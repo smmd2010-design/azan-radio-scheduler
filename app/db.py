@@ -94,7 +94,7 @@ DEFAULT_PRAYERS = ["fajr", "dhuhr", "asr", "maghrib", "isha"]
 DEFAULT_SETTINGS = {
     "admin_password_hash": "",  # set on first run
     "duration_default_minutes": "7",
-    "start_offset_default_minutes": "0",  # minutes to start BEFORE the prayer time, 0 = start exactly at prayer time
+    "start_offset_default_seconds": "15",  # seconds to start BEFORE the prayer time, 0 = start exactly at prayer time
     # StreamTheWorld is the actual CDN Mediacorp/RTM stations are hosted
     # on; this URL pattern was found via a third-party station directory
     # and NOT verified end-to-end from this build environment (which has
@@ -140,6 +140,15 @@ def init_db() -> None:
         # Safe to run every startup: fails harmlessly once the column exists.
         try:
             conn.execute("ALTER TABLE prayer_settings ADD COLUMN start_offset_minutes INTEGER")
+        except sqlite3.OperationalError:
+            pass  # already migrated
+        # Start-early support used to only go down to whole minutes; now
+        # seconds-based so e.g. "15 seconds before azan" is possible. Old
+        # minute values (almost certainly still the untouched default of 0)
+        # aren't meaningfully worth converting, so this is a fresh column
+        # rather than a straight *60 conversion of the old one.
+        try:
+            conn.execute("ALTER TABLE prayer_settings ADD COLUMN start_offset_seconds INTEGER")
         except sqlite3.OperationalError:
             pass  # already migrated
         for name in DEFAULT_PRAYERS:
@@ -214,13 +223,13 @@ def set_prayer_setting(
     prayer_name: str,
     enabled: bool,
     duration_minutes: int | None,
-    start_offset_minutes: int | None = None,
+    start_offset_seconds: int | None = None,
 ) -> None:
     with _WRITE_LOCK, _connect() as conn:
         conn.execute(
-            "UPDATE prayer_settings SET enabled = ?, duration_minutes = ?, start_offset_minutes = ? "
+            "UPDATE prayer_settings SET enabled = ?, duration_minutes = ?, start_offset_seconds = ? "
             "WHERE prayer_name = ?",
-            (1 if enabled else 0, duration_minutes, start_offset_minutes, prayer_name),
+            (1 if enabled else 0, duration_minutes, start_offset_seconds, prayer_name),
         )
 
 

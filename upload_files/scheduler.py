@@ -5,7 +5,7 @@ Deliberately NOT built on APScheduler + a persistent jobstore. That combo
 is powerful but adds two extra dependencies (APScheduler, SQLAlchemy) and
 a class of subtle bugs around misfire handling and jobstore locking that
 are hard to reason about. Instead this is a small, fully-owned tick loop:
-every 15 seconds it compares "now" against today's schedule (persisted in
+every few seconds it compares "now" against today's schedule (persisted in
 our own `todays_schedule` table) and fires whatever needs firing. It is
 simple enough to read top-to-bottom and trust.
 
@@ -34,7 +34,14 @@ from .backends import get_backend, run_with_resilience
 
 logger = logging.getLogger("azan.scheduler")
 
-TICK_SECONDS = 15
+
+# A short-early-start like "15 seconds before azan" needs the tick loop
+# itself to check more often than that, or the requested lead time gets
+# silently swallowed by the loop's own granularity (checking every 15s
+# can only ever fire the moment "now" catches up, which can land anywhere
+# from on-time to ~15s late relative to a 15s-early target). 5s keeps that
+# slop small while still being a trivially cheap loop to run continuously.
+TICK_SECONDS = 5
 PRAYER_NAMES = ["fajr", "dhuhr", "asr", "maghrib", "isha"]
 
 _last_scheduled_date: str | None = None
@@ -72,7 +79,7 @@ async def ensure_schedule_for_today(today_str: str, tz: ZoneInfo, *, force_refet
 
     prayer_cfg = {row["prayer_name"]: row for row in db.get_prayer_settings()}
     default_duration = int(db.get_setting("duration_default_minutes", "7"))
-    default_start_offset = int(db.get_setting("start_offset_default_minutes", "0"))
+    default_start_offset_seconds = int(db.get_setting("start_offset_default_seconds", "15"))
 
     new_rows = []
     for name in PRAYER_NAMES:
@@ -83,11 +90,15 @@ async def ensure_schedule_for_today(today_str: str, tz: ZoneInfo, *, force_refet
         if not hhmm:
             continue
         duration = cfg["duration_minutes"] if cfg["duration_minutes"] else default_duration
-        # start_offset_minutes may not exist as a key on older in-memory Row
+        # start_offset_seconds may not exist as a key on older in-memory Row
         # objects mid-migration; .keys() check keeps this safe either way.
-        offset_override = cfg["start_offset_minutes"] if "start_offset_minutes" in cfg.keys() else None
-        start_offset = offset_override if offset_override else default_start_offset
-        start_at = _combine(today_str, hhmm, tz) - dt.timedelta(minutes=start_offset)
+        # Compared with "is not None" (not plain truthiness) so an explicit
+        # per-prayer override of 0 - "start exactly on time for just this
+        # prayer" - is respected instead of silently falling back to the
+        # global default.
+        offset_override = cfg["start_offset_seconds"] if "start_offset_seconds" in cfg.keys() else None
+        start_offset_seconds = offset_override if offset_override is not None else default_start_offset_seconds
+        start_at = _combine(today_str, hhmm, tz) - dt.timedelta(seconds=start_offset_seconds)
         stop_at = start_at + dt.timedelta(minutes=duration)
         new_rows.append(
             {

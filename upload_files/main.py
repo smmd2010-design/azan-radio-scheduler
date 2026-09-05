@@ -228,7 +228,7 @@ async def settings_get(request: Request):
 async def settings_general(
     request: Request,
     duration_default_minutes: int = Form(...),
-    start_offset_default_minutes: int = Form(0),
+    start_offset_default_seconds: int = Form(15),
     stream_url: str = Form(""),
     stream_content_type: str = Form("audio/mpeg"),
     station_name: str = Form("Warna 94.2FM"),
@@ -241,7 +241,7 @@ async def settings_general(
     db.set_settings(
         {
             "duration_default_minutes": str(duration_default_minutes),
-            "start_offset_default_minutes": str(start_offset_default_minutes),
+            "start_offset_default_seconds": str(start_offset_default_seconds),
             "stream_url": stream_url.strip(),
             "stream_content_type": stream_content_type.strip() or "audio/mpeg",
             "station_name": station_name.strip() or "Warna 94.2FM",
