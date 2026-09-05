@@ -313,6 +313,8 @@ async def devices_get(request: Request):
             "backend_labels": BACKEND_LABELS,
             "alexa_configured": bool(ha_base_url and ha_token),
             "ha_base_url": ha_base_url,
+            "device_prayers": db.get_all_device_prayers(),
+            "prayer_names": scheduler.PRAYER_NAMES,
         },
     )
 
@@ -405,6 +407,13 @@ async def alexa_add(request: Request, label: str = Form(...), target: str = Form
 @app.post("/devices/{device_id}/toggle")
 async def device_toggle(request: Request, device_id: int, enabled: bool = Form(...)):
     db.set_device_enabled(device_id, enabled)
+    return RedirectResponse("/devices", status_code=303)
+
+
+@app.post("/devices/{device_id}/prayers")
+async def device_prayers(request: Request, device_id: int, prayers: list[str] = Form([])):
+    valid = [p for p in prayers if p in scheduler.PRAYER_NAMES]
+    db.set_device_prayers(device_id, valid)
     return RedirectResponse("/devices", status_code=303)
 
 

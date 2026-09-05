@@ -104,11 +104,11 @@ async def _fire_start(today_str: str, prayer_name: str) -> None:
     stream_url = db.get_setting("stream_url", "")
     content_type = db.get_setting("stream_content_type", "audio/mpeg")
     station_name = db.get_setting("station_name", "Warna 94.2FM")
-    devices = db.list_devices(enabled_only=True)
+    devices = db.get_devices_for_prayer(prayer_name, enabled_only=True)
 
     if not devices:
-        db.mark_fired(today_str, prayer_name, "start", "no enabled devices configured")
-        db.log("WARNING", "scheduler", f"{prayer_name}: start fired but no devices are configured")
+        db.mark_fired(today_str, prayer_name, "start", "no devices assigned to this prayer")
+        db.log("WARNING", "scheduler", f"{prayer_name}: start fired but no devices are assigned to it")
         return
 
     async def run_one(device):
@@ -127,7 +127,7 @@ async def _fire_start(today_str: str, prayer_name: str) -> None:
 
 
 async def _fire_stop(today_str: str, prayer_name: str) -> None:
-    devices = db.list_devices(enabled_only=True)
+    devices = db.get_devices_for_prayer(prayer_name, enabled_only=True)
 
     async def run_one(device):
         backend = get_backend(device["backend"])

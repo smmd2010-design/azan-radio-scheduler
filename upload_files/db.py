@@ -52,6 +52,13 @@ CREATE TABLE IF NOT EXISTS devices (
     created_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS device_prayers (
+    device_id INTEGER NOT NULL,
+    prayer_name TEXT NOT NULL,      -- fajr, dhuhr, asr, maghrib, isha
+    PRIMARY KEY (device_id, prayer_name),
+    FOREIGN KEY (device_id) REFERENCES devices(id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS prayer_cache (
     date TEXT PRIMARY KEY,          -- YYYY-MM-DD
     fajr TEXT, dhuhr TEXT, asr TEXT, maghrib TEXT, isha TEXT,
@@ -145,6 +152,22 @@ def init_db() -> None:
             conn.execute(
                 "INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)", (key, value)
             )
+        # Migration for devices added before per-prayer assignment existed
+        # (device_prayers is a brand-new table): a device with zero rows
+        # there must keep behaving exactly as it always did - play on every
+        # prayer - rather than silently going quiet on all of them the
+        # moment this version starts up.
+        device_ids = [r["id"] for r in conn.execute("SELECT id FROM devices").fetchall()]
+        already_assigned = {
+            r["device_id"]
+            for r in conn.execute("SELECT DISTINCT device_id FROM device_prayers").fetchall()
+        }
+        for device_id in device_ids:
+            if device_id not in already_assigned:
+                conn.executemany(
+                    "INSERT OR IGNORE INTO device_prayers (device_id, prayer_name) VALUES (?, ?)",
+                    [(device_id, name) for name in DEFAULT_PRAYERS],
+                )
 
 
 def get_setting(key: str, default: str | None = None) -> str | None:
@@ -217,7 +240,16 @@ def add_device(backend: str, label: str, target: str) -> int:
             "VALUES (?, ?, ?, 1, ?)",
             (backend, label, target, _now_iso()),
         )
-        return cur.lastrowid
+        device_id = cur.lastrowid
+        # Default a newly-added device to playing every prayer - matches
+        # the app's historical behaviour and is the least surprising
+        # starting point; per-prayer assignment can be narrowed afterwards
+        # from the Devices page.
+        conn.executemany(
+            "INSERT OR IGNORE INTO device_prayers (device_id, prayer_name) VALUES (?, ?)",
+            [(device_id, name) for name in DEFAULT_PRAYERS],
+        )
+        return device_id
 
 
 def set_device_enabled(device_id: int, enabled: bool) -> None:
@@ -230,6 +262,48 @@ def set_device_enabled(device_id: int, enabled: bool) -> None:
 def delete_device(device_id: int) -> None:
     with _WRITE_LOCK, _connect() as conn:
         conn.execute("DELETE FROM devices WHERE id = ?", (device_id,))
+
+
+def get_device_prayers(device_id: int) -> set[str]:
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT prayer_name FROM device_prayers WHERE device_id = ?", (device_id,)
+        ).fetchall()
+        return {r["prayer_name"] for r in rows}
+
+
+def get_all_device_prayers() -> dict[int, set[str]]:
+    """Every device's prayer assignment in one query - used by the Devices page."""
+    with _connect() as conn:
+        rows = conn.execute("SELECT device_id, prayer_name FROM device_prayers").fetchall()
+    result: dict[int, set[str]] = {}
+    for r in rows:
+        result.setdefault(r["device_id"], set()).add(r["prayer_name"])
+    return result
+
+
+def set_device_prayers(device_id: int, prayer_names: list[str]) -> None:
+    """Replace which prayers this device plays for. An empty list means never."""
+    with _WRITE_LOCK, _connect() as conn:
+        conn.execute("DELETE FROM device_prayers WHERE device_id = ?", (device_id,))
+        conn.executemany(
+            "INSERT INTO device_prayers (device_id, prayer_name) VALUES (?, ?)",
+            [(device_id, name) for name in prayer_names if name in DEFAULT_PRAYERS],
+        )
+
+
+def get_devices_for_prayer(prayer_name: str, enabled_only: bool = False) -> list[sqlite3.Row]:
+    with _connect() as conn:
+        q = (
+            "SELECT devices.* FROM devices "
+            "JOIN device_prayers ON device_prayers.device_id = devices.id "
+            "WHERE device_prayers.prayer_name = ?"
+        )
+        params: list = [prayer_name]
+        if enabled_only:
+            q += " AND devices.enabled = 1"
+        q += " ORDER BY devices.backend, devices.label"
+        return conn.execute(q, params).fetchall()
 
 
 def upsert_prayer_cache_row(date: str, times: dict[str, str], source: str) -> None:

@@ -7,7 +7,7 @@
     <p class="muted">No devices yet — add one from an ecosystem below.</p>
   {% else %}
   <table>
-    <tr><th>Label</th><th>Ecosystem</th><th>Enabled</th><th>Test</th><th></th></tr>
+    <tr><th>Label</th><th>Ecosystem</th><th>Enabled</th><th>Plays for</th><th>Test</th><th></th></tr>
     {% for d in devices %}
     <tr>
       <td>{{ d.label }}</td>
@@ -16,6 +16,18 @@
         <form method="post" action="/devices/{{ d.id }}/toggle" style="display:inline">
           <input type="hidden" name="enabled" value="{{ 'false' if d.enabled else 'true' }}">
           <button type="submit" class="secondary" style="margin:0;padding:4px 10px;">{{ 'Disable' if d.enabled else 'Enable' }}</button>
+        </form>
+      </td>
+      <td>
+        <form method="post" action="/devices/{{ d.id }}/prayers" style="display:flex;flex-wrap:wrap;gap:6px;max-width:180px;">
+          {% for p in prayer_names %}
+          <label style="font-size:12px;display:flex;align-items:center;gap:3px;white-space:nowrap;">
+            <input type="checkbox" name="prayers" value="{{ p }}" style="width:auto;"
+              {% if p in (device_prayers.get(d.id) or []) %}checked{% endif %}
+              onchange="this.form.requestSubmit()">
+            {{ p|capitalize }}
+          </label>
+          {% endfor %}
         </form>
       </td>
       <td>
@@ -31,6 +43,7 @@
     </tr>
     {% endfor %}
   </table>
+  <p class="muted">Uncheck a prayer for a device to skip that prayer on that device — e.g. play Fajr and Isha only on the bedroom speaker, and the rest on the living room one. Unchecking every prayer for a device just means it never plays automatically (its Test buttons above still work).</p>
   {% endif %}
 </div>
 
