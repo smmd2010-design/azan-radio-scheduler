@@ -46,6 +46,7 @@ PRAYER_NAMES = ["fajr", "dhuhr", "asr", "maghrib", "isha"]
 
 _last_scheduled_date: str | None = None
 _last_fetch_attempt: dt.datetime | None = None
+_last_skip_log_date: str | None = None
 FETCH_RETRY_INTERVAL = dt.timedelta(minutes=10)
 
 
@@ -60,7 +61,7 @@ def _combine(date_str: str, hhmm: str, tz: ZoneInfo) -> dt.datetime:
 
 
 async def ensure_schedule_for_today(today_str: str, tz: ZoneInfo, *, force_refetch: bool) -> None:
-    global _last_fetch_attempt
+    global _last_fetch_attempt, _last_skip_log_date
 
     times = None
     if force_refetch:
@@ -81,13 +82,27 @@ async def ensure_schedule_for_today(today_str: str, tz: ZoneInfo, *, force_refet
     default_duration = int(db.get_setting("duration_default_minutes", "7"))
     default_start_offset_seconds = int(db.get_setting("start_offset_default_seconds", "15"))
 
+    # Log *why* a prayer is being left out of today's schedule - once per day,
+    # not every tick - so a disabled prayer (or missing source data) shows up
+    # plainly in the Logs page instead of just... never firing with nothing
+    # to explain it.
+    log_skips = _last_skip_log_date != today_str
+
     new_rows = []
     for name in PRAYER_NAMES:
         cfg = prayer_cfg.get(name)
         if cfg is None or not cfg["enabled"]:
+            if log_skips:
+                db.log("INFO", "scheduler", f"{name}: skipped today - disabled in Settings/Prayers")
             continue
         hhmm = times.get(name)
         if not hhmm:
+            if log_skips:
+                db.log(
+                    "WARNING",
+                    "scheduler",
+                    f"{name}: skipped today - no time available from the prayer-time source",
+                )
             continue
         duration = cfg["duration_minutes"] if cfg["duration_minutes"] else default_duration
         # start_offset_seconds may not exist as a key on older in-memory Row
@@ -109,6 +124,8 @@ async def ensure_schedule_for_today(today_str: str, tz: ZoneInfo, *, force_refet
         )
 
     db.replace_unfired_schedule_for_today(today_str, new_rows)
+    if log_skips:
+        _last_skip_log_date = today_str
 
 
 async def _fire_start(today_str: str, prayer_name: str) -> None:
