@@ -15,6 +15,7 @@ thread running concurrently.
 
 from __future__ import annotations
 
+import json
 import sqlite3
 import threading
 import time
@@ -151,6 +152,15 @@ def init_db() -> None:
             conn.execute("ALTER TABLE prayer_settings ADD COLUMN start_offset_seconds INTEGER")
         except sqlite3.OperationalError:
             pass  # already migrated
+        # Free-form per-device settings a backend needs beyond the fixed
+        # backend/label/target columns - e.g. sony_tv.py's TV IP + Pre-Shared
+        # Key for powering a Sony BRAVIA off after azan (see extra_config
+        # helpers below). Stored as a JSON string so future backends can add
+        # their own fields without another schema migration each time.
+        try:
+            conn.execute("ALTER TABLE devices ADD COLUMN extra_config TEXT")
+        except sqlite3.OperationalError:
+            pass  # already migrated
         for name in DEFAULT_PRAYERS:
             conn.execute(
                 "INSERT OR IGNORE INTO prayer_settings (prayer_name, enabled, duration_minutes) "
@@ -259,6 +269,29 @@ def add_device(backend: str, label: str, target: str) -> int:
             [(device_id, name) for name in DEFAULT_PRAYERS],
         )
         return device_id
+
+
+def get_device_extra_config(device: sqlite3.Row) -> dict:
+    """
+    Free-form per-device config (see the extra_config migration above) -
+    e.g. sony_tv.py reads {"tv_ip": ..., "tv_psk": ...} from here. Returns
+    {} for a device with nothing set yet, never raises on bad/missing data.
+    """
+    raw = device["extra_config"] if "extra_config" in device.keys() else None
+    if not raw:
+        return {}
+    try:
+        return json.loads(raw)
+    except (TypeError, ValueError):
+        return {}
+
+
+def set_device_extra_config(device_id: int, config: dict) -> None:
+    with _WRITE_LOCK, _connect() as conn:
+        conn.execute(
+            "UPDATE devices SET extra_config = ? WHERE id = ?",
+            (json.dumps(config), device_id),
+        )
 
 
 def set_device_enabled(device_id: int, enabled: bool) -> None:
