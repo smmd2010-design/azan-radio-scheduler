@@ -218,6 +218,7 @@ async def _fire_start(today_str: str, row) -> None:
         db.log("WARNING", "scheduler", f"{prayer_name}: start fired but no devices are assigned to it")
         return
 
+    tz = get_tz()
     start_at = dt.datetime.fromisoformat(row["start_at"])
     stop_at = dt.datetime.fromisoformat(row["stop_at"])
 
