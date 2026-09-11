@@ -39,6 +39,7 @@ saying "Alexa, play Warna 94.2FM on TuneIn" would.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 
 import httpx
@@ -58,6 +59,14 @@ HTTP_TIMEOUT = 10.0
 _ALEXA_MEDIA_MARKER_ATTRS = ("connected_bluetooth", "bluetooth_list")
 
 MUSIC_PROVIDER_ID = "TUNEIN"
+
+# How long to give the Echo to actually start playing before we check back
+# in on it. media_player.play_media returning success only means Alexa
+# *accepted* the request - see _start_async.
+_CONFIRM_DELAY_SECONDS = 3.0
+
+# States that mean audio is genuinely coming out of the speaker.
+_PLAYING_STATES = {"playing", "buffering"}
 
 
 class HomeAssistantNotConfigured(RuntimeError):
@@ -126,6 +135,20 @@ async def _call_service(domain: str, service: str, data: dict) -> None:
     resp.raise_for_status()
 
 
+async def _get_state(entity_id: str) -> tuple[str | None, float | None]:
+    """Returns (state, volume_level) for one entity, or (None, None) on error."""
+    base_url, token = _get_config()
+    try:
+        async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
+            resp = await client.get(f"{base_url}/api/states/{entity_id}", headers=_headers(token))
+        resp.raise_for_status()
+        entity = resp.json()
+        return entity.get("state"), (entity.get("attributes") or {}).get("volume_level")
+    except httpx.HTTPError as exc:
+        logger.warning("Couldn't read back state for %s after starting it: %s", entity_id, exc)
+        return None, None
+
+
 async def _start_async(target: str, search_phrase: str) -> BackendResult:
     await _call_service(
         "media_player",
@@ -136,6 +159,37 @@ async def _start_async(target: str, search_phrase: str) -> BackendResult:
             "media_content_type": MUSIC_PROVIDER_ID,
         },
     )
+    # Production incidents, Isha 2026-09-09/10: this call reported a plain
+    # success both nights (Alexa Media Player's play_media only confirms
+    # Alexa *accepted* the request, never that anything audible happened),
+    # but nothing was actually heard - once because the Echo's own volume
+    # was left at 0%, once because Alexa silently dropped the stream on its
+    # own about 30 seconds in. Home Assistant's reported state/volume are
+    # the only signal available from here to catch either case, so check
+    # back in shortly after asking it to play instead of trusting the
+    # service call alone.
+    await asyncio.sleep(_CONFIRM_DELAY_SECONDS)
+    state, volume = await _get_state(target)
+    if state is not None and state not in _PLAYING_STATES:
+        return BackendResult(
+            ok=False,
+            message=(
+                f"asked Alexa to play '{search_phrase}' but the device now reports "
+                f"state '{state}' instead of playing"
+            ),
+        )
+    if volume is not None and volume <= 0.01:
+        # Not treated as a failure (retrying won't raise the volume, and the
+        # request itself did succeed) - but surfaced clearly so a silent
+        # azan shows up in the log instead of looking identical to a normal
+        # success.
+        return BackendResult(
+            ok=True,
+            message=(
+                f"Asked Alexa (via Home Assistant) to play '{search_phrase}' - "
+                f"WARNING: device volume is at 0%, azan will be silent"
+            ),
+        )
     return BackendResult(ok=True, message=f"Asked Alexa (via Home Assistant) to play '{search_phrase}'")
 
 
@@ -158,6 +212,18 @@ async def _health_async(target: str) -> BackendResult:
     return BackendResult(ok=True, message="Online")
 
 
+async def _verify_playing_async(target: str) -> BackendResult:
+    """Used by the scheduler's mid-window recheck - see base.PlayerBackend.verify_playing."""
+    state, volume = await _get_state(target)
+    if state is None:
+        return BackendResult(ok=False, message="couldn't read device state back from Home Assistant")
+    if state not in _PLAYING_STATES:
+        return BackendResult(ok=False, message=f"device reports state '{state}' instead of playing")
+    if volume is not None and volume <= 0.01:
+        return BackendResult(ok=False, message="device volume is at 0%")
+    return BackendResult(ok=True, message="still playing")
+
+
 class AlexaBackend(PlayerBackend):
     name = "alexa"
 
@@ -175,3 +241,6 @@ class AlexaBackend(PlayerBackend):
 
     async def health(self, target: str) -> BackendResult:
         return await _health_async(target)
+
+    async def verify_playing(self, target: str) -> BackendResult:
+        return await _verify_playing_async(target)

@@ -44,6 +44,14 @@ logger = logging.getLogger("azan.scheduler")
 TICK_SECONDS = 5
 PRAYER_NAMES = ["fajr", "dhuhr", "asr", "maghrib", "isha"]
 
+# Mid-window playback recheck (see _mid_window_recheck): how far into a
+# device's own start->stop window to check back in on it, clamped so a
+# short window still gets checked reasonably soon and a long one doesn't
+# wait needlessly late.
+_MID_WINDOW_MIN_DELAY_SECONDS = 25.0
+_MID_WINDOW_MAX_DELAY_SECONDS = 90.0
+_MID_WINDOW_FRACTION = 0.4
+
 _last_scheduled_date: str | None = None
 _last_fetch_attempt: dt.datetime | None = None
 _last_skip_log_date: str | None = None
@@ -128,7 +136,78 @@ async def ensure_schedule_for_today(today_str: str, tz: ZoneInfo, *, force_refet
         _last_skip_log_date = today_str
 
 
-async def _fire_start(today_str: str, prayer_name: str) -> None:
+async def _mid_window_recheck(
+    today_str: str,
+    prayer_name: str,
+    device,
+    stream_url: str,
+    content_type: str,
+    station_name: str,
+    start_at: dt.datetime,
+    stop_at: dt.datetime,
+) -> None:
+    """
+    Catches a device that silently drops playback mid-window - confirmed to
+    happen in production (Sherif's Echo Show 10, Isha 2026-09-10: dropped
+    from playing to idle ~30s after a successful start, well before its
+    ~5min stop time, and nothing caught it because the app never checked
+    again until the scheduled stop fired and reported "already stopped").
+
+    Runs once per device per prayer as a background task, so it never
+    blocks the main tick loop or any other device's start/stop. Must never
+    raise - it's launched with asyncio.create_task() and nothing awaits it.
+    """
+    try:
+        backend = get_backend(device["backend"])
+        window_seconds = (stop_at - start_at).total_seconds()
+        delay = max(
+            _MID_WINDOW_MIN_DELAY_SECONDS,
+            min(_MID_WINDOW_MAX_DELAY_SECONDS, window_seconds * _MID_WINDOW_FRACTION),
+        )
+        await asyncio.sleep(delay)
+
+        # If the window's stop has already fired (a short duration, or the
+        # process fell behind), there's nothing useful left to check or
+        # restart - the stop already told this device to be quiet.
+        rows = db.get_todays_schedule(today_str)
+        row = next((r for r in rows if r["prayer_name"] == prayer_name), None)
+        if row is None or row["stop_fired"]:
+            return
+
+        try:
+            result = await asyncio.wait_for(backend.verify_playing(device["target"]), timeout=15)
+        except NotImplementedError:
+            return  # this backend has no way to confirm playback state - nothing to check
+        except Exception:  # noqa: BLE001 - a failed check must never crash the loop
+            logger.exception(
+                "Mid-window playback check raised for %s (%s)", device["label"], prayer_name
+            )
+            return
+
+        if result.ok:
+            return  # still playing - nothing to do
+
+        db.log(
+            "WARNING",
+            f"backend.{device['backend']}",
+            f"{device['label']}: dropped out mid-{prayer_name} ({result.message}) - restarting it",
+        )
+        restart = await run_with_resilience(
+            lambda: backend.start(device["target"], stream_url, content_type, station_name),
+            label=f"{device['backend']}:{device['label']} mid-window restart",
+        )
+        db.log(
+            "INFO" if restart.ok else "ERROR",
+            f"backend.{device['backend']}",
+            f"{device['label']}: mid-{prayer_name} restart "
+            f"{'succeeded' if restart.ok else 'failed'} - {restart.message}",
+        )
+    except Exception:  # noqa: BLE001 - background task, must never raise
+        logger.exception("Mid-window recheck task crashed for %s (%s)", device.get("label"), prayer_name)
+
+
+async def _fire_start(today_str: str, row) -> None:
+    prayer_name = row["prayer_name"]
     stream_url = db.get_setting("stream_url", "")
     content_type = db.get_setting("stream_content_type", "audio/mpeg")
     station_name = db.get_setting("station_name", "Warna 94.2FM")
@@ -139,6 +218,9 @@ async def _fire_start(today_str: str, prayer_name: str) -> None:
         db.log("WARNING", "scheduler", f"{prayer_name}: start fired but no devices are assigned to it")
         return
 
+    start_at = dt.datetime.fromisoformat(row["start_at"])
+    stop_at = dt.datetime.fromisoformat(row["stop_at"])
+
     async def run_one(device):
         backend = get_backend(device["backend"])
         result = await run_with_resilience(
@@ -147,6 +229,16 @@ async def _fire_start(today_str: str, prayer_name: str) -> None:
         )
         level = "INFO" if result.ok else "ERROR"
         db.log(level, f"backend.{device['backend']}", f"{device['label']}: {result.message}")
+        if result.ok:
+            # Fire-and-forget: confirms this device is still actually
+            # playing partway through the window, and restarts it once if
+            # not. Never awaited here - must not delay the other devices'
+            # start, or this prayer's "start fired" log line.
+            asyncio.create_task(
+                _mid_window_recheck(
+                    today_str, prayer_name, device, stream_url, content_type, station_name, start_at, stop_at
+                )
+            )
         return f"{device['label']}: {'OK' if result.ok else 'FAILED'} - {result.message}"
 
     results = await asyncio.gather(*(run_one(d) for d in devices))
@@ -202,7 +294,7 @@ async def _tick_once() -> None:
             continue
 
         if not row["start_fired"] and now >= start_at:
-            await _fire_start(today_str, row["prayer_name"])
+            await _fire_start(today_str, row)
             continue
 
         if row["start_fired"] and not row["stop_fired"] and now >= stop_at:

@@ -46,6 +46,21 @@ class PlayerBackend:
     async def health(self, target: str) -> BackendResult:
         raise NotImplementedError
 
+    async def verify_playing(self, target: str) -> BackendResult:
+        """
+        Optional: confirm a device that was successfully started earlier is
+        STILL actually playing, partway through its window - not just
+        reachable/configured, which health() checks. Added after a
+        production incident (Sherif's Echo Show 10, Isha 2026-09-10) where
+        a device silently dropped playback ~30s into a ~5min window and
+        nothing noticed until the scheduled stop.
+
+        Backends that have no way to tell the difference should leave this
+        raising NotImplementedError - callers (the scheduler's mid-window
+        recheck) treat that as "nothing to check" rather than a failure.
+        """
+        raise NotImplementedError
+
 
 async def run_with_resilience(
     coro_factory,

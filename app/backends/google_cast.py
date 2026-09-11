@@ -118,7 +118,21 @@ def _stop_sync(name: str) -> BackendResult:
     mc.block_until_active(timeout=12)
     if mc.status.media_session_id is not None:
         mc.stop()
-        return BackendResult(ok=True, message=f"Stopped '{name}'")
+        # mc.stop() only halts the media session - on a device with a screen
+        # (e.g. a Nest Hub) that leaves the receiver app's "now playing" UI
+        # on screen (paused Warna 94.2FM tile) instead of returning to the
+        # device's ambient/home screen. Reported by Sherif, Sept 2026: the
+        # Google Nest Hub stayed on that screen after every azan. Quitting
+        # the receiver app is what actually sends the display back to idle/
+        # home - best-effort and never allowed to turn a successful stop
+        # into a failure, since a speaker-only Cast target has no screen for
+        # this to matter to anyway, and audio has already stopped either way.
+        try:
+            cast.quit_app()
+        except Exception:  # noqa: BLE001 - best-effort only, audio already stopped
+            logger.warning("'%s' stopped but quit_app() (for the home-screen reset) failed", name, exc_info=True)
+            return BackendResult(ok=True, message=f"Stopped '{name}' (couldn't reset its screen to home)")
+        return BackendResult(ok=True, message=f"Stopped '{name}' and returned it to its home screen")
     try:
         cast.quit_app()
     except Exception as exc:  # noqa: BLE001 - best-effort fallback, must never raise
@@ -138,6 +152,21 @@ def _health_sync(name: str) -> BackendResult:
     return BackendResult(ok=True, message=f"'{name}' is reachable")
 
 
+def _verify_playing_sync(name: str) -> BackendResult:
+    """Used by the scheduler's mid-window recheck - see base.PlayerBackend.verify_playing."""
+    cast = _discover_and_connect(name, timeout=6.0)
+    if cast is None:
+        return BackendResult(ok=False, message=f"'{name}' not discoverable on the network")
+    mc = cast.media_controller
+    mc.block_until_active(timeout=8)
+    state = (mc.status.player_state or "").upper()
+    if state in _NOT_PLAYING_STATES:
+        return BackendResult(
+            ok=False, message=f"'{name}' reports state '{state or 'unknown'}' instead of playing"
+        )
+    return BackendResult(ok=True, message=f"'{name}' still playing")
+
+
 class GoogleCastBackend(PlayerBackend):
     name = "google_cast"
 
@@ -151,6 +180,9 @@ class GoogleCastBackend(PlayerBackend):
 
     async def health(self, target: str) -> BackendResult:
         return await asyncio.to_thread(_health_sync, target)
+
+    async def verify_playing(self, target: str) -> BackendResult:
+        return await asyncio.to_thread(_verify_playing_sync, target)
 
 
 def list_available_devices(timeout: float = 10.0) -> list[str]:
