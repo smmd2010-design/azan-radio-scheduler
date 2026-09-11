@@ -48,13 +48,20 @@
 </div>
 
 <div class="card">
+  <h2>Scan network for devices</h2>
+  <p class="muted">Looks for Cast (Google Home/Nest speakers, Chromecast dongles, Cast-enabled TVs like a Sony BRAVIA) and AirPlay (HomePod) devices on your network, all in one pass. Alexa devices can't be found this way - they're added via Home Assistant below.</p>
+  <button onclick="scanNetwork()">Scan network</button>
+  <div id="scan-results"></div>
+</div>
+
+<div class="card" id="google-section">
   <h2>Add a Google Home / Nest speaker</h2>
   <p class="muted">Discovery scans your local network for a few seconds. The speaker must already be set up in the Google Home app.</p>
   <button onclick="discoverGoogle()">Discover Google speakers</button>
   <div id="google-list"></div>
 </div>
 
-<div class="card">
+<div class="card" id="homepod-section">
   <h2>Add an Apple HomePod</h2>
   <p class="muted">Pairing is one-time: your HomePod will show a PIN code to enter here.</p>
   <button onclick="discoverHomepod()">Discover HomePods</button>
@@ -123,6 +130,53 @@ async function testDevice(btn, id, action) {
     buttons.forEach(b => b.disabled = false);
     btn.textContent = originalLabel;
   }
+}
+
+async function scanNetwork() {
+  const el = document.getElementById('scan-results');
+  el.innerHTML = '<p class="muted"><span class="spinner"></span> Scanning your network (a few seconds)…</p>';
+  let resp;
+  try {
+    resp = await post('/devices/scan');
+  } catch (e) {
+    el.innerHTML = '<p class="flash error">Could not reach the app to scan — check the NAS/network.</p>';
+    return;
+  }
+  if (!resp.ok) { el.innerHTML = `<p class="flash error">${resp.error}</p>`; return; }
+  if (resp.devices.length === 0) {
+    el.innerHTML = '<p class="muted">No Cast or AirPlay devices found. Make sure they\'re powered on and on the same network as the NAS, then try again.</p>';
+    return;
+  }
+  el.innerHTML = resp.devices.map(d => {
+    if (d.protocol === 'airplay') {
+      return `<div class="row">
+        <span>${d.name} <span class="muted">(AirPlay)</span></span>
+        <a href="#homepod-section" onclick="document.getElementById('homepod-section').scrollIntoView({behavior:'smooth'})">Pair it below ↓</a>
+      </div>`;
+    }
+    const isTV = d.suggested_backend === 'sony_tv';
+    const safeId = 'scan_' + d.name.replace(/[^a-zA-Z0-9]/g, '_');
+    return `<form onsubmit="return addScannedDevice(event, '${d.name.replace(/'/g, "\\'")}')" class="row">
+      <input type="hidden" name="target" value="${d.name}">
+      <span class="muted" style="min-width:70px;">${d.model || 'Cast device'}</span>
+      <input name="label" value="${d.name}" style="max-width:200px;">
+      <select name="backend" id="${safeId}_backend" style="max-width:210px;">
+        <option value="google_cast" ${!isTV ? 'selected' : ''}>Speaker (Google Cast)</option>
+        <option value="sony_tv" ${isTV ? 'selected' : ''}>TV (adds power-off after azan)</option>
+      </select>
+      <button type="submit" style="margin:0;">Add "${d.name}"</button>
+    </form>`;
+  }).join('');
+}
+
+async function addScannedDevice(evt, target) {
+  evt.preventDefault();
+  const f = evt.target;
+  const label = f.label.value;
+  const backend = f.backend.value;
+  await post('/devices/cast/add', {label, target, backend});
+  location.reload();
+  return false;
 }
 
 async function discoverGoogle() {

@@ -11,7 +11,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
 
-from . import db, prayer_times, scheduler
+from . import db, discovery, prayer_times, scheduler
 from .backends import BACKEND_LABELS, get_backend
 from .backends import google_cast as google_cast_mod
 from .backends import homepod_airplay as homepod_mod
@@ -317,6 +317,29 @@ async def devices_get(request: Request):
             "prayer_names": scheduler.PRAYER_NAMES,
         },
     )
+
+
+@app.post("/devices/scan")
+async def devices_scan(request: Request):
+    try:
+        found = await discovery.scan_network()
+    except Exception as exc:  # noqa: BLE001 - the scan endpoint itself must never 500
+        return JSONResponse({"ok": False, "error": str(exc)})
+    return JSONResponse({"ok": True, "devices": found})
+
+
+_CAST_ADD_BACKENDS = {"google_cast", "sony_tv"}
+
+
+@app.post("/devices/cast/add")
+async def cast_add(
+    request: Request, backend: str = Form(...), label: str = Form(...), target: str = Form(...)
+):
+    if backend not in _CAST_ADD_BACKENDS:
+        return JSONResponse({"ok": False, "error": f"Unknown backend '{backend}'"})
+    db.add_device(backend, label, target)
+    db.log("INFO", "devices", f"Added {BACKEND_LABELS[backend]} device '{label}' ({target}) from network scan")
+    return JSONResponse({"ok": True})
 
 
 @app.post("/devices/google/discover")
